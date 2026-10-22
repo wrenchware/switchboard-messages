@@ -129,7 +129,7 @@ func (a *readOnlyAdapter) uiMarkRead(ctx context.Context, raw json.RawMessage) (
 		Metadata: slidetypes.MarkReadMetadata{IGThreadIGID: chat.longID},
 		Data:     slidetypes.MarkReadData{MessageID: params.MessageID, ItemID: ptr("")},
 	}
-	_, err := client.MarkRead(httpclient.SendOnce(ctx), request)
+	marked, err := client.MarkRead(httpclient.SendOnce(ctx), request)
 	a.requests.note(ctx, &a.requests.mutations, err != nil)
 	if err != nil {
 		return nil, failureCode(err)
@@ -146,7 +146,15 @@ func (a *readOnlyAdapter) uiMarkRead(ctx context.Context, raw json.RawMessage) (
 	// a retry of something that already happened. Answered says Instagram replied at all, and validated is what that
 	// reply said about the id and time it was given — a call that succeeds can still say no, and reporting the call's
 	// success as the answer hid exactly the mismatch this is here to show.
-	return map[string]any{"validated": err == nil && validation != nil && validation.Validated, "answered": err == nil && validation != nil}, ""
+	result := map[string]any{"validated": err == nil && validation != nil && validation.Validated, "answered": err == nil && validation != nil}
+	// How far short of the thread's own activity time the watermark Instagram recorded falls. Instagram counts a thread
+	// unread against that activity time (upstream igconnector/backfill.go), and Messenger left one unread for being
+	// 0.5 s short of it (2026-10-22); this measures whether Instagram does the same before anything is changed for it.
+	// Read from the answer already received: nothing more is asked.
+	if short, ok := watermarkShort(marked, chat.At); ok {
+		result["watermarkShortMs"] = short
+	}
+	return result, ""
 }
 
 func ptr[T any](value T) *T { return &value }
@@ -273,4 +281,13 @@ func (a *readOnlyAdapter) writable(chatID string) (*uiChat, string) {
 		return nil, "chat_not_writable"
 	}
 	return chat, ""
+}
+
+// How many milliseconds the watermark in Instagram's answer to a read falls short of the thread's activity time
+// (negative when past it), and whether the answer carried one.
+func watermarkShort(marked *slidetypes.MarkReadResponse, activity int64) (int64, bool) {
+	if marked == nil || activity <= 0 || marked.ReadReceipt.WatermarkTimestampMS.IsZero() {
+		return 0, false
+	}
+	return activity - marked.ReadReceipt.WatermarkTimestampMS.UnixMilli(), true
 }

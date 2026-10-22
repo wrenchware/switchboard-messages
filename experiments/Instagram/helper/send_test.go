@@ -12,18 +12,18 @@ import (
 
 type fakeWriteClient struct {
 	fakeHistoryClient
-	sent       []*slidetypes.SendTextRequest
-	read       []*slidetypes.MarkReadRequest
-	validated  []*slidetypes.MarkReadRequest
-	reacted    []*slidetypes.CreateReactionRequest
-	edited     []*slidetypes.EditMessageRequest
-	unsent     []*slidetypes.UnsendMessageRequest
-	sentMedia  []*slidetypes.SendMediaRequest
-	sendErr    error
-	readErr    error
-	validErr   error
-	validates  bool
-	nilOnSend  bool
+	sent      []*slidetypes.SendTextRequest
+	read      []*slidetypes.MarkReadRequest
+	validated []*slidetypes.MarkReadRequest
+	reacted   []*slidetypes.CreateReactionRequest
+	edited    []*slidetypes.EditMessageRequest
+	unsent    []*slidetypes.UnsendMessageRequest
+	sentMedia []*slidetypes.SendMediaRequest
+	sendErr   error
+	readErr   error
+	validErr  error
+	validates bool
+	nilOnSend bool
 }
 
 func (c *fakeWriteClient) SendMessage(_ context.Context, r *slidetypes.SendTextRequest) (*slidetypes.SendTextResponse, error) {
@@ -425,5 +425,20 @@ func TestOnlyRecordedAudioIsAVoiceClip(t *testing.T) {
 	}
 	if voiceClip(false, "audio/mp4") {
 		t.Error("an audio file the person chose was marked a voice clip")
+	}
+}
+
+// The gap between the thread's activity time and the watermark Instagram says it recorded, read from the answer to the
+// read itself; nothing when Instagram's answer carried no watermark.
+func TestMarkReadWatermarkShortOfActivity(t *testing.T) {
+	answer := &slidetypes.MarkReadResponse{ReadReceipt: slidetypes.ReadReceipt{WatermarkTimestampMS: unixMilli(1000)}}
+	if short, ok := watermarkShort(answer, 1600); !ok || short != 600 {
+		t.Fatalf("short=%d ok=%v", short, ok)
+	}
+	if _, ok := watermarkShort(&slidetypes.MarkReadResponse{}, 1600); ok {
+		t.Fatal("an answer without a watermark was measured")
+	}
+	if _, ok := watermarkShort(nil, 1600); ok {
+		t.Fatal("no answer was measured")
 	}
 }

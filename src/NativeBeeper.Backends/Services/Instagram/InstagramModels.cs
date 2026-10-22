@@ -733,3 +733,33 @@ internal static class InstagramMarkRead
         message is not null && message.Timestamp.ToUnixTimeMilliseconds() is > 0 and var at ? (at, "message")
         : (chat?.At ?? 0, "list");
 }
+
+/// <summary>
+/// The conversations whose last read Instagram did not take, and when. The next one for the same conversation waits
+/// <see cref="RetryAfterFailure"/> (owner, 2026-10-22): a read that failed is tried again only on the next look at the
+/// conversation, and a refusing or throttled Instagram is never asked faster than this.
+/// </summary>
+internal sealed class InstagramReadFailures
+{
+    public static TimeSpan RetryAfterFailure { get; set; } = TimeSpan.FromMinutes(2);
+    private readonly Dictionary<string, DateTimeOffset> failedAt = new(StringComparer.Ordinal);
+
+    public bool HoldsBack(string chatId, DateTimeOffset now)
+    {
+        lock (failedAt) return failedAt.TryGetValue(chatId, out var at) && now - at < RetryAfterFailure;
+    }
+
+    public void Failed(string chatId, DateTimeOffset now)
+    {
+        lock (failedAt)
+        {
+            if (failedAt.Count > 500) failedAt.Clear();
+            failedAt[chatId] = now;
+        }
+    }
+
+    public void Succeeded(string chatId)
+    {
+        lock (failedAt) failedAt.Remove(chatId);
+    }
+}

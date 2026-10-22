@@ -1122,7 +1122,10 @@ internal sealed partial class InstagramBackend : IBeeperBackend, IChatReader, IR
     /// </remarks>
     public async Task MarkReadAsync(string chatId, string messageId, CancellationToken cancellationToken = default)
     {
-        if (identity is not { } known || helper is not { } started || !IsConnected) return;
+        // A read not made is said so, never answered as done: the caller then showed the conversation read and never told
+        // Instagram again, so it stayed unread on Instagram's own apps (2026-10-22 audit). The view's own quiet catch keeps
+        // the error from the person, and the conversation stays unread here, which is what Instagram says.
+        if (identity is not { } known || helper is not { } started || !IsConnected) throw NotConnected("read");
         var native = known.NativeChat(chatId);
         var message = known.NativeMessage(messageId);
         var chat = chats.FirstOrDefault(item => item.Id == native);
@@ -1135,18 +1138,38 @@ internal sealed partial class InstagramBackend : IBeeperBackend, IChatReader, IR
         ChatMessage? remembered;
         lock (receiptGate) seen.TryGetValue(messageId, out remembered);
         var (at, source) = InstagramMarkRead.Time(remembered, chat);
-        if (at <= 0) return;
+        if (at <= 0) throw Refused("Instagram can't mark this as read yet.");
+        // A failed read is tried again on the next look at the conversation, and at most once every RetryAfterFailure for
+        // one conversation (owner, 2026-10-22): a refusing or throttled Instagram is never asked faster than that.
+        if (readFailures.HoldsBack(native, DateTimeOffset.UtcNow))
+        {
+            InstagramLog.Write(InstagramLog.MarkReadFailed(native, "held_back"));
+            throw Refused("Instagram refused this read a moment ago.");
+        }
         JsonElement result;
         try { result = await started.CallAsync("ui.markRead", new { chatId = native, messageId = message, at }, cancellationToken); }
         catch (OperationCanceledException) { throw; }
         // Read state is not worth an error in front of the user, and never worth an automatic retry.
-        catch (Exception) { return; }
+        catch (Exception failure)
+        {
+            readFailures.Failed(native, DateTimeOffset.UtcNow);
+            // The helper's failure code, which MarkReadFailed reduces to a fixed word; any other exception is only "other".
+            var code = failure is InvalidOperationException ? failure.Message : "other";
+            InstagramLog.Write(InstagramLog.MarkReadFailed(native, code));
+            throw Refused("Instagram did not take this read.");
+        }
         finally { Announced(chatId); }
+        readFailures.Succeeded(native);
         chatsReadAt = DateTimeOffset.MinValue;
         // Whether Instagram accepted the id and time it was given, and which time that was: the measurement that says
-        // whether the conversation's latest activity was ever a good enough stand-in for the message's own time.
-        InstagramLog.Write(InstagramLog.MarkRead(native, Flag(result, "validated"), Flag(result, "answered"), source));
+        // whether the conversation's latest activity was ever a good enough stand-in for the message's own time. Short is
+        // how far the watermark Instagram recorded falls short of the conversation's activity time (owner, 2026-10-22:
+        // measured before the unread rule is changed to Instagram's).
+        long? shortMs = result.ValueKind == JsonValueKind.Object && result.TryGetProperty("watermarkShortMs", out var gap) && gap.TryGetInt64(out var ms) ? ms : null;
+        InstagramLog.Write(InstagramLog.MarkRead(native, Flag(result, "validated"), Flag(result, "answered"), source, shortMs));
     }
+
+    private readonly InstagramReadFailures readFailures = new();
 
     private static bool Flag(JsonElement result, string name) =>
         result.ValueKind == JsonValueKind.Object && result.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;

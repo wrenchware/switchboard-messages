@@ -126,8 +126,11 @@ internal static class InstagramLog
     // for it then still finds it.
     public static string MarkReadSkipped(string chatId, string? folder) => $"instagram markread skipped folder={Folder(folder)} chat={Tag(chatId)}";
 
-    public static string MarkRead(string chatId, bool validated, bool answered, string source) =>
-        $"instagram markread validated={validated} answered={answered} at={Word(source)} chat={Tag(chatId)}";
+    public static string MarkRead(string chatId, bool validated, bool answered, string source, long? shortMs = null) =>
+        $"instagram markread validated={validated} answered={answered} at={Word(source)}" + (shortMs is { } ms ? $" short_ms={ms}" : "") + $" chat={Tag(chatId)}";
+
+    // A read Instagram did not take, or one held back because the last for the conversation failed moments ago.
+    public static string MarkReadFailed(string chatId, string reason) => $"instagram markread failed reason={Word(reason)} chat={Tag(chatId)}";
 
     public static string History(string chatId, int returned, bool older, int positions, int withReaders) =>
         $"instagram history returned={returned} older={older} positions={positions} withReaders={withReaders} chat={Tag(chatId)}";

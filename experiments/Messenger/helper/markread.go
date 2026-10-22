@@ -59,6 +59,13 @@ func (a *adapter) acknowledgeRead(key, watermark int64, encrypted bool, writeEnc
 	if encrypted {
 		var code string
 		result, code = writeEncrypted()
+		// With the encrypted connection down the named receipts cannot go, but the thread watermark travels on the
+		// ordinary connection and is what clears the conversation on Facebook's web and phone. Nothing at all was sent
+		// before, and the conversation stayed unread there for as long as the encrypted connection was away.
+		if code == "e2ee_off" || code == "e2ee_offline" {
+			logf("mark read chat=%s encrypted offline thread only", tag(key))
+			result, code = map[string]any{"outcome": "accepted", "receiptsSent": 0}, ""
+		}
 		if code != "" {
 			return nil, code
 		}

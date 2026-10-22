@@ -94,6 +94,7 @@ internal sealed class MessagingRouter(GoogleMessagesBackend google, MessengerBac
         var insta = await instagramTask; var meta = await messengerTask;
         var merged = chats.Items.Concat(voiceChats).Concat(insta.Items).Concat(meta.Items)
             .OrderByDescending(chat => chat.LastActivity ?? DateTimeOffset.MinValue).ThenBy(chat => chat.Id, StringComparer.Ordinal).ToArray();
+        foreach (var chat in merged) Drift.Observe(chat);
         var googleMore = chats.HasMore && chats.OldestCursor is not null;
         var retry = voiceFailed > 0 || chats.UnavailableScopes?.Count > 0 ? Math.Min(1_000_000, (combined?.Retry ?? 0) + 1) : 0;
         var warnings = new[] { chats.Warning, insta.Warning, meta.Warning,
@@ -105,10 +106,10 @@ internal sealed class MessagingRouter(GoogleMessagesBackend google, MessengerBac
             Warning: string.Join(" ", warnings.Where(value => !string.IsNullOrEmpty(value))), UnavailableScopes: unavailable);
     }
 
-    public Task<ChatSummary> GetChatAsync(string chatId, CancellationToken cancellationToken = default)
-        => Insta(chatId) ? instagram.GetChatAsync(chatId, cancellationToken)
+    public async Task<ChatSummary> GetChatAsync(string chatId, CancellationToken cancellationToken = default)
+        => Observed(await (Insta(chatId) ? instagram.GetChatAsync(chatId, cancellationToken)
             : Voice(chatId) ? voice.GetChatAsync(chatId, cancellationToken)
-            : Mine(chatId) ? messenger.GetChatAsync(chatId, cancellationToken) : google.GetChatAsync(chatId, cancellationToken);
+            : Mine(chatId) ? messenger.GetChatAsync(chatId, cancellationToken) : google.GetChatAsync(chatId, cancellationToken)).ConfigureAwait(false));
 
     public async Task<Page<ChatMessage>> GetMessagesAsync(string chatId, string? olderThan = null, CancellationToken cancellationToken = default)
     {
@@ -205,11 +206,24 @@ internal sealed class MessagingRouter(GoogleMessagesBackend google, MessengerBac
 
     // Every read marker reaches a service through here, and every one the app means to send comes through
     // PrivateReadingGate first. One for a private-reading service that did not is refused and logged, not sent.
-    public Task MarkReadAsync(string chatId, string messageId, CancellationToken cancellationToken = default)
-        => NativeBeeper.Presentation.Services.PrivateReadingGate.Refuses(reading, chatId, "read") ? Task.CompletedTask
-            : Insta(chatId) ? instagram.MarkReadAsync(chatId, messageId, cancellationToken)
+    public Task MarkReadAsync(string chatId, string messageId, CancellationToken cancellationToken = default) => TellReadAsync(chatId, messageId, cancellationToken);
+
+    // Whether the service was told (false: private reading kept it). A read it took is remembered for the drift check.
+    private async Task<bool> TellReadAsync(string chatId, string messageId, CancellationToken cancellationToken)
+    {
+        if (NativeBeeper.Presentation.Services.PrivateReadingGate.Refuses(reading, chatId, "read")) return false;
+        await (Insta(chatId) ? instagram.MarkReadAsync(chatId, messageId, cancellationToken)
             : Voice(chatId) ? voice.MarkReadAsync(chatId, cancellationToken)
-            : Mine(chatId) ? messenger.MarkReadAsync(chatId, messageId, cancellationToken) : google.MarkReadAsync(chatId, messageId, cancellationToken);
+            : Mine(chatId) ? messenger.MarkReadAsync(chatId, messageId, cancellationToken) : google.MarkReadAsync(chatId, messageId, cancellationToken)).ConfigureAwait(false);
+        Drift.Accepted(chatId, messageId);
+        return true;
+    }
+
+    // Reads a service took and then did not keep (ReadDrift): seen in the conversations passing back through here, told once more.
+    private ReadDrift? drift;
+    internal ReadDrift Drift => LazyInitializer.EnsureInitialized(ref drift, () => new ReadDrift(TellReadAsync, GetChatAsync, AppLog.Write));
+
+    private ChatSummary Observed(ChatSummary chat) { Drift.Observe(chat); return chat; }
 
     public bool HasLocalActionOptions => ((IMessageActions)google).HasLocalActionOptions;
 

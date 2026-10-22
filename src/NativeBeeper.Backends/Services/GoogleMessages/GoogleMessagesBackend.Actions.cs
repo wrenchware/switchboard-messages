@@ -23,10 +23,24 @@ internal sealed partial class GoogleMessagesBackend
     }
     public async Task MarkReadAsync(string chatId,string messageId,CancellationToken cancellationToken=default)
     {
-        if(messageId.StartsWith(PendingPrefix,StringComparison.Ordinal)) return;
+        // A message still on its way has no id Google knows. Answering this as done showed the conversation read while Google
+        // was never told (2026-10-22 audit); refused, it stays as Google says and is read again once the real id arrives.
+        if(messageId.StartsWith(PendingPrefix,StringComparison.Ordinal))
+        {
+            GoogleMessagesLog.Write($"operation=mark_read outcome=deferred reason=pending chat={GoogleMessagesLog.Tag(chatId)}");
+            throw new BackendException(BackendFailure.Unavailable,"That message is still sending.");
+        }
         await MediaCallAsync("ui.markRead",new {chatId=GoogleModels.Native(chatId),messageId=GoogleModels.Native(messageId)},cancellationToken);
-        // Do not force an unread count to zero: a newer message may have arrived during the write.
-        await RefreshChatAsync(chatId,cancellationToken);
+        // Do not force an unread count to zero: a newer message may have arrived during the write. Google took the read
+        // whether or not this refresh answers, so a failed refresh is not a failed read.
+        try
+        {
+            var after=await RefreshChatAsync(chatId,cancellationToken);
+            // Whether Google still says unread straight after taking the read: the first sign of a read it did not keep.
+            GoogleMessagesLog.Write($"mark read chat={GoogleMessagesLog.Tag(chatId)} unread_after={(after.Unread ? "yes" : "no")}");
+        }
+        catch(OperationCanceledException) when(cancellationToken.IsCancellationRequested) { throw; }
+        catch(Exception) { GoogleMessagesLog.Write($"mark read chat={GoogleMessagesLog.Tag(chatId)} unread_after=unknown"); }
         Publish(new(RealtimeKind.ChatChanged,chatId));
     }
     public bool HasLocalActionOptions => true;

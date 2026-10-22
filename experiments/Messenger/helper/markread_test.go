@@ -206,6 +206,8 @@ func TestReadRequiresBothChannelsBeforeClearingUnread(t *testing.T) {
 		{"encrypted", true, "", "", 1, 1, true},
 		{"encrypted failed", true, "mark_read_failed", "", 1, 0, false},
 		{"thread failed", true, "", "mark_read_failed", 1, 1, false},
+		{"encrypted offline", true, "e2ee_offline", "", 1, 1, true},
+		{"encrypted off", true, "e2ee_off", "", 1, 1, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			a := newAdapter(nil)
@@ -386,5 +388,26 @@ func TestLegacyMessageChannelMigrationPreservesHistory(t *testing.T) {
 	}
 	if got := restored.unreadUpTo(7, 1000); len(got) != 1 || got[0].id != "123456789" {
 		t.Fatal("migration sent ordinary/unknown IDs as encrypted receipts")
+	}
+}
+
+// Facebook saying less has been read than this copy does is counted once per watermark, never adopted (owner,
+// 2026-10-22: measured before it is followed), and a row older than the copy is not counted at all.
+func TestLowerFacebookWatermarkIsCountedNotAdopted(t *testing.T) {
+	s := newStore()
+	s.setSelf(1)
+	row := func(activity, read int64) {
+		s.apply(&table.LSTable{LSUpdateOrInsertThread: []*table.LSUpdateOrInsertThread{
+			{ThreadKey: 5, LastActivityTimestampMs: activity, LastReadWatermarkTimestampMs: read, ThreadType: table.ONE_TO_ONE},
+		}})
+	}
+	row(100, 100)
+	row(100, 90)
+	if s.get(5).readAt != 100 || s.get(5).lowerNoted != 90 {
+		t.Fatalf("lower watermark adopted or not counted: read=%d noted=%d", s.get(5).readAt, s.get(5).lowerNoted)
+	}
+	row(50, 40)
+	if s.get(5).lowerNoted != 90 {
+		t.Fatal("an older row was counted as drift")
 	}
 }

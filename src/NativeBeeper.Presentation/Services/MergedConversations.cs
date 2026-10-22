@@ -307,6 +307,21 @@ public sealed partial class MergedConversations(PrivateState state, Func<ChatSum
         members.Where(m => !m.IsCallHistory && !m.IsSpam && m.UnreadCount <= 0 && (current?.ContainsKey(m.Id) == true || known.ContainsKey(m.Id)))
             .Max(m => m.LastActivity);
 
+    /// <summary>
+    /// Raised with the call records a merged row has stopped counting (<see cref="Counts"/>) that Voice still lists unread, each once
+    /// per activity: shown read here, Voice was never told, and voice.google.com kept the missed call or voicemail unread under a
+    /// conversation read through newer texts (2026-10-22 audit; the owner chose to tell Voice).
+    /// </summary>
+    public event EventHandler<IReadOnlyList<ChatSummary>>? CallRecordsSettled;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset?> settledAnnounced = new(StringComparer.Ordinal);
+    private void AnnounceSettled(IEnumerable<ChatSummary> calls)
+    {
+        var fresh = calls.Where(call => !settledAnnounced.TryGetValue(call.Id, out var at) || at != call.LastActivity).ToArray();
+        if (fresh.Length == 0) return;
+        foreach (var call in fresh) settledAnnounced[call.Id] = call.LastActivity;
+        CallRecordsSettled?.Invoke(this, fresh);
+    }
+
     public IReadOnlyList<ChatSummary> Project(IEnumerable<ChatSummary> input)
     {
         var rows = input.Where(c => !IsMerged(c.Id)).ToArray();
@@ -331,6 +346,7 @@ public sealed partial class MergedConversations(PrivateState state, Func<ChatSum
             foreach (var member in present)
                 if (member.IsCallHistory && member.UnreadCount > 0 && !Counts(member, through)) (settled ??= new(StringComparer.Ordinal)).Add(member.Id);
         }
+        if (settled is not null) AnnounceSettled(settled.Select(id => byId[id]));
         return rows.Select(c => !membership.TryGetValue(c.Id, out var parent) ? c
                 : settled?.Contains(c.Id) == true ? c with { MergedIntoChatId = parent, UnreadCount = 0 } : c with { MergedIntoChatId = parent })
             .Concat(snapshot.Select(g => Summary(g, byId, members[g.Id], now))).ToArray();

@@ -846,12 +846,14 @@ internal sealed partial class MessengerBackend(IStateProtector protector) : ICha
         catch (Exception) { return new(false, [], []); }
     }
 
-    // Read markers. Only a conversation this account can reply to is marked read: a read-only encrypted one has no
-    // connection to say it on. Failure is quiet — a missed read marker is not worth interrupting anyone over.
+    // Read markers. Only a conversation this account can reply to is marked read, or an encrypted one whatever its
+    // connection: with the encrypted connection away the helper still writes the thread watermark on the ordinary one,
+    // which is what clears it on Facebook's web and phone (it sent nothing at all before, 2026-10-22). Failure is quiet —
+    // a missed read marker is not worth interrupting anyone over.
     public Task<bool> CanMarkReadAsync(string chatId, CancellationToken cancellationToken = default)
     {
         var native = MessengerModels.Native(chatId);
-        return Task.FromResult(helper is not null && chats.Any(chat => chat.Id == native && !chat.ReadOnly));
+        return Task.FromResult(helper is not null && chats.Any(chat => chat.Id == native && (!chat.ReadOnly || chat.Encrypted)));
     }
 
     public async Task MarkReadAsync(string chatId, string messageId, CancellationToken cancellationToken = default)

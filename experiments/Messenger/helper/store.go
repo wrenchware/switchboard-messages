@@ -47,6 +47,8 @@ type thread struct {
 	// which group changes this account is offered (see groupstate.go).
 	admins           map[int64]struct{}
 	approvalRequired bool
+	// The last watermark Facebook sent below this copy's own, so each one is counted once (readDrift).
+	lowerNoted int64
 }
 
 type message struct {
@@ -439,6 +441,12 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 		}
 		if readAt > current.readAt {
 			current.readAt = readAt
+		} else if readAt > 0 && readAt < current.readAt && lastActivity >= current.lastActivity && readAt != current.lowerNoted {
+			// Facebook says less has been read than this copy does, in a row as new as any it holds: marked unread on
+			// another device, or a read it took and then lost. Only counted for now (owner, 2026-10-22: measure before
+			// following it), since an older row can look the same.
+			current.lowerNoted = readAt
+			logf("read drift chat=%s facebook lower ms=%d", tag(key), current.readAt-readAt)
 		}
 		if (whole || folder != "") && lastActivity >= current.lastActivity {
 			current.folder = folder

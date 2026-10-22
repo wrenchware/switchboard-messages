@@ -176,9 +176,48 @@ public sealed partial class ChatListViewModel
         // A newer activity event may have arrived while the bounded read marker was submitted.
         if (index < 0 || activityAtRead is null || loaded[index].LastActivity != activityAtRead) return;
         if (attempt != 0 && (!localReads.TryGetValue(chatId, out var pending) || pending.Attempt != attempt)) return;
-        localReads[chatId] = new(activityAtRead, attempt, true);
+        var kept = ++localReadAttempt;
+        localReads[chatId] = new(activityAtRead, kept, true);
         // A read its service was not told of is kept past this run: the service will go on saying it is unread.
         if (readHere?.Wants(chatId) == true) readHere.Mark(chatId, activityAtRead.Value);
+        Rebuild();
+        _ = TrustServiceAfterGraceAsync(chatId, kept);
+    }
+
+    /// <summary>
+    /// How long a read the service took is shown read here whatever the service says next. Long enough for a service's own
+    /// unread to catch up with a read it took (Voice lists again at most every 10 s); after it, the service's answer is shown
+    /// again (owner, 2026-10-22): a read the service took and then lost showed read here for the rest of the run while
+    /// Messenger's web and Instagram's app kept it unread. Settable for the offline checks.
+    /// </summary>
+    public static TimeSpan ReadTrustGrace { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Raised with a conversation's id when its service still said unread once a read's grace ended.</summary>
+    public event EventHandler<string>? ReadNotKept;
+
+    private async Task TrustServiceAfterGraceAsync(string chatId, long kept)
+    {
+        try { await Task.Delay(ReadTrustGrace, lifetime.Token); }
+        catch (OperationCanceledException) { return; }
+        bool Current() => localReads.TryGetValue(chatId, out var read) && read.Confirmed && read.Attempt == kept;
+        if (!Current()) return;
+        // The row may be the copy from before the read, if the service announced nothing after taking it. Asked once more, so a read the
+        // service kept is not shown unread from that old copy. Not Instagram's: asking is a request to Instagram, and its read already
+        // announced the conversation, so the list holds what Instagram said after it.
+        if (!chatId.StartsWith("instagram:", StringComparison.Ordinal))
+        {
+            ChatSummary fresh;
+            try { fresh = await reader.GetChatAsync(chatId, lifetime.Token); }
+            catch (Exception) { return; }
+            if (!Current()) return;
+            var index = loaded.FindIndex(c => c.Id == chatId);
+            if (index >= 0 && fresh.Id == chatId && (fresh.LastActivity ?? DateTimeOffset.MinValue) >= (loaded[index].LastActivity ?? DateTimeOffset.MinValue))
+                loaded[index] = KeepKnownPreview(fresh, loaded[index]);
+        }
+        var boundary = localReads[chatId].Boundary;
+        localReads.Remove(chatId);
+        var row = loaded.FirstOrDefault(c => c.Id == chatId);
+        if (row is { UnreadCount: > 0 } && row.LastActivity <= boundary) ReadNotKept?.Invoke(this, chatId);
         Rebuild();
     }
 

@@ -40,9 +40,16 @@ func (a *adapter) markRead(ctx context.Context, r request) (any, string) {
 	}
 	watermark := target.At.UnixMilli()
 	encrypted, _ := a.chats.encryptedThread(key)
-	return a.acknowledgeRead(key, watermark, encrypted,
+	// Facebook keeps a conversation unread while the watermark it holds is short of the thread's own activity time, and
+	// that time can be a few milliseconds after the newest message's. Lifting only our own copy showed one read here
+	// while Messenger on the web, and this helper after the nightly restart, kept it unread (2026-10-22).
+	through := a.chats.readThrough(key, watermark)
+	if through != watermark {
+		logf("mark read chat=%s watermark lifted ms=%d", tag(key), through-watermark)
+	}
+	return a.acknowledgeRead(key, through, encrypted,
 		func() (any, string) { return a.markReadEncrypted(ctx, key, watermark) },
-		func() string { return a.writeThreadRead(ctx, key, watermark) })
+		func() string { return a.writeThreadRead(ctx, key, through) })
 }
 
 // Encrypted messages need their named receipts and the Lightspeed thread watermark used by Facebook's chat UI.
@@ -218,19 +225,42 @@ func (s *store) markReadUpTo(key, watermark int64) bool {
 	if !ok {
 		return false
 	}
-	newer := false
-	for _, message := range s.messages[key] {
-		if !message.unsent && message.timestamp > watermark {
-			newer = true
-			break
-		}
-	}
-	if !newer && current.lastActivity > watermark {
-		watermark = current.lastActivity
-	}
+	watermark = s.readThroughLocked(key, watermark)
 	if watermark <= current.readAt {
 		return false
 	}
 	current.readAt = watermark
 	return true
+}
+
+// How far reading through watermark reads: the thread's activity time when no message is newer than the watermark.
+func (s *store) readThrough(key, watermark int64) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.readThroughLocked(key, watermark)
+}
+
+func (s *store) readThroughLocked(key, watermark int64) int64 {
+	current, ok := s.threads[key]
+	if !ok {
+		return watermark
+	}
+	for _, message := range s.messages[key] {
+		if !message.unsent && message.timestamp > watermark {
+			return watermark
+		}
+	}
+	return max(watermark, current.lastActivity)
+}
+
+// Replying in a conversation reads it, as Messenger's own apps do. The ordinary connection sends that with the
+// message; an encrypted send has no room for it, so Facebook kept every conversation answered from here unread on the
+// web while this helper showed it read (2026-10-22). Told after the send, off its path: the message has gone either
+// way, and a lost read marker is only a dot on another device.
+func (a *adapter) readAfterSend(key, at int64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		a.writeThreadRead(ctx, key, a.chats.readThrough(key, at))
+	}()
 }

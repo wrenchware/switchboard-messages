@@ -51,12 +51,19 @@ func TestReadingTheNewestMessageClearsUnreadDespiteLaterActivity(t *testing.T) {
 	current := s.get(7)
 	current.lastActivity = 1004
 	current.readAt = 500
+	// What Facebook is told must reach the activity time too, or its own apps keep the conversation unread.
+	if got := s.readThrough(7, 1000); got != 1004 {
+		t.Fatalf("thread watermark for Facebook = %d, want the activity time 1004", got)
+	}
 	if !s.markReadUpTo(7, 1000) || current.readAt < current.lastActivity {
 		t.Fatalf("read up to %d with activity at %d", current.readAt, current.lastActivity)
 	}
 	// Reading an older message while a newer one exists must not claim the newer one was read.
 	s.messages[7]["b"] = &message{id: "b", encrypted: true, sender: 2, timestamp: 2000}
 	current.lastActivity = 2003
+	if got := s.readThrough(7, 1500); got != 1500 {
+		t.Fatalf("thread watermark for Facebook passed an unread newer message: %d", got)
+	}
 	s.markReadUpTo(7, 1500)
 	if current.readAt >= 2000 {
 		t.Fatalf("an unread newer message was marked read: readAt=%d", current.readAt)

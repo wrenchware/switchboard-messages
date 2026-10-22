@@ -115,6 +115,7 @@ func (a *adapter) sendEncryptedMedia(ctx context.Context, key int64, staged []by
 		crypto.messages.rememberMedia(ctx, key, id, at, item, held)
 	}
 	a.out.write(response{Event: "changed", Result: touched})
+	a.readAfterSend(key, at)
 	logf("sendMedia chat=%s encrypted accepted message=%s drawn=%v", tag(key), tagOf(id), item != nil && held != nil)
 	return map[string]any{"outcome": "accepted", "id": id, "otid": id}, ""
 }
@@ -154,6 +155,7 @@ func (a *adapter) sendEncryptedMediaBatch(ctx context.Context, key int64, staged
 		prepared = append(prepared, preparedImage{data: data, width: width, height: height, mime: files[index].Mime, uploaded: uploaded})
 	}
 	ids := make([]string, 0, len(prepared))
+	var last int64
 	chat := strconv.FormatInt(key, 10)
 	groupID := strconv.FormatInt(methods.GenerateEpochID(), 10)
 	for index, image := range prepared {
@@ -186,9 +188,11 @@ func (a *adapter) sendEncryptedMediaBatch(ctx context.Context, key int64, staged
 		if item != nil && held != nil {
 			crypto.messages.rememberMedia(ctx, key, id, at, item, held)
 		}
+		last = at
 		ids = append(ids, id)
 	}
 	a.out.write(response{Event: "changed", Result: &changes{Chats: []string{chat}, Messages: map[string][]string{chat: ids}}})
+	a.readAfterSend(key, last)
 	logf("sendMediaBatch chat=%s encrypted accepted message=%s count=%d nativeSequence=true", tag(key), tagOf(ids[0]), len(ids))
 	return map[string]any{"outcome": "accepted", "id": ids[0], "otid": ids[0], "ids": ids}, ""
 }

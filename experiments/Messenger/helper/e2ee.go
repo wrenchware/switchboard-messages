@@ -462,6 +462,7 @@ func (a *adapter) sendEncrypted(ctx context.Context, key int64, text, replyTo st
 	touched := a.chats.addEncrypted(key, id, a.chats.viewer(), text, replyTo, at)
 	crypto.messages.remember(ctx, key, id, a.chats.viewer(), text, replyTo, at)
 	a.out.write(response{Event: "changed", Result: touched})
+	a.readAfterSend(key, at)
 	logf("send chat=%s encrypted accepted message=%s", tag(key), tagOf(id))
 	return map[string]any{"id": id, "otid": id}, ""
 }

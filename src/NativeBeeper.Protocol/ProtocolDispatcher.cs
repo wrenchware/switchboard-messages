@@ -26,7 +26,7 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
 
     /// <summary>A mutation checked and ready: the caller's operation id and the call, not yet made.</summary>
     private sealed record Prepared(string ClientOpId, Func<CancellationToken, Task<byte[]>> Call, string? SendChatId = null,
-        Func<CancellationToken, Task>? Before = null);
+        Func<CancellationToken, Task>? Before = null, bool Outlives = false);
 
     private delegate Prepared Prepare(ProtocolDispatcher connection, ProtocolServices services, RequestFrame request);
 
@@ -50,6 +50,15 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
     private readonly MediaReadCache readCache = mediaCache ?? new MediaReadCache();
 
     private readonly ConcurrentDictionary<string, CancellationTokenSource> running = new(StringComparer.Ordinal);
+    // The running requests that change something at a provider (a send, a reaction, a read mark): they outlive the connection by OutlivingGrace.
+    private readonly ConcurrentDictionary<string, byte> outliving = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// How long a provider change already under way keeps running once its connection has closed. Cut off at once, a send that had reached the service
+    /// was journaled as an unknown outcome and went anyway: the phone dropped mid-send and showed its two texts as uncertain until Google's copies came
+    /// 40 s later (owner's phone, 2026-10-22). Let run, the journal holds what happened, and the client that comes back reads it (ops.status).
+    /// </summary>
+    public static TimeSpan OutlivingGrace { get; set; } = TimeSpan.FromMinutes(2);
     // Only the read loop touches it.
     private bool greeted;
     // The version this connection's hello chose. Written by the read loop before any request of the connection is run, and read by those requests and the feed.
@@ -69,7 +78,8 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
         {
             // A source is never disposed: a request's own task may be racing a cancel, and an undisposed source that never
             // started a timer or linked to another holds nothing.
-            foreach (var source in running.Values) source.Cancel();
+            foreach (var (id, source) in running)
+                if (outliving.ContainsKey(id)) source.CancelAfter(OutlivingGrace); else source.Cancel();
             await EndFeedAsync().ConfigureAwait(false);
             // What this connection stated no longer counts (HostClientState), nor its version.
             EndClientState();
@@ -407,6 +417,7 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
             else if (route.Prepare is { } prepare)
             {
                 var mutation = prepare(this, services, request);
+                if (mutation.Outlives) outliving[request.Id] = 0;
                 // Connection admission applies to cached answers too: the journal skips Call on a replay.
                 if (mutation.Before is { } before) await before(source.Token).ConfigureAwait(false);
                 response = Frames.SerializeResult(request.Id, await Journal.ExecuteAsync(mutation.ClientOpId,
@@ -419,6 +430,7 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
             response = Frames.Serialize(ResponseFrame.Failure(request.Id, ProtocolErrors.From(exception)));
         }
         running.TryRemove(request.Id, out _);
+        outliving.TryRemove(request.Id, out _);
         // Only a method this host knows is named in the measurements; whatever else a peer sends is not echoed anywhere.
         // Not the sign-in's input: how many calls a person's typing made would be a measure of what they typed (RemoteSignIn).
         if (route is not null && request.Method != ProtocolMethods.RemoteSignInInputMethod) stats?.Record(request.Method, Stopwatch.GetElapsedTime(started));
@@ -535,7 +547,7 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
                 AttachmentSendParams p => p.ChatId,
                 AttachmentBatchParams p => p.ChatId,
                 _ => null,
-            });
+            }, Outlives: true);
         }, Settles: settles);
 
     // Void ports answer an empty object.

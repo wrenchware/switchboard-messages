@@ -1,0 +1,159 @@
+using System.Text;
+using System.Text.Json;
+using NativeBeeper.Core.Messaging;
+using NativeBeeper.Core.Services;
+using NativeBeeper.Presentation.Services;
+
+namespace NativeBeeper.App.Services.GoogleMessages;
+
+internal sealed record GoogleContact(string Id, string Name, string Phone);
+
+internal static class GoogleDirectory
+{
+    public const int MaximumConversationCount = 2000;
+
+    // The helper's whole-list answer: the contacts, and each request it made for them as counts, logged so the log says
+    // which way of asking the phone honours (contacts_list.go). "1/350/50:50+50" is the request's three numbers, the rows
+    // that came back and how many were new; "x" a refused request; "?3:24" a response field the schema does not name.
+    public static (GoogleContact[] Contacts, string Tries) ReadContacts(System.Text.Json.JsonElement result, System.Text.Json.JsonSerializerOptions json)
+    {
+        if (result.ValueKind == System.Text.Json.JsonValueKind.Array) return (result.Deserialize<GoogleContact[]>(json) ?? [], "");
+        var contacts = result.TryGetProperty("contacts", out var list) ? list.Deserialize<GoogleContact[]>(json) ?? [] : [];
+        var tries = new List<string>();
+        if (result.TryGetProperty("tries", out var asked) && asked.ValueKind == System.Text.Json.JsonValueKind.Array)
+            foreach (var attempt in asked.EnumerateArray())
+            {
+                int Number(string name) => attempt.TryGetProperty(name, out var value) && value.TryGetInt32(out var n) ? n : 0;
+                var line = $"{Number("i1")}/{Number("i2")}/{Number("i3")}:";
+                line += attempt.TryGetProperty("failed", out var failed) && failed.ValueKind == System.Text.Json.JsonValueKind.True
+                    ? "x" : $"{Number("rows")}+{Number("fresh")}";
+                if (attempt.TryGetProperty("unknown", out var unknown) && unknown.GetString() is { Length: > 0 } fields) line += "?" + fields;
+                tries.Add(line);
+            }
+        return (contacts, string.Join(',', tries));
+    }
+
+    // The helper exposes expanding prefixes rather than an opaque cursor. Either folder filling the requested prefix
+    // means there may be another page; requiring the inbox to fill it made an exhausted inbox hide older archived
+    // conversations. `advanced` stops a provider that repeats the same prefix from producing an endless cursor.
+    public static int? NextConversationCount(int requested, int inboxCount, int archiveCount, bool advanced)
+    {
+        if (!advanced || requested >= MaximumConversationCount || inboxCount < requested && archiveCount < requested) return null;
+        return Math.Min(MaximumConversationCount, requested * 2);
+    }
+
+    // Folder reads can overlap while the phone is applying an archive change. The explicit archive result is
+    // authoritative in that case; keeping the earlier inbox copy would put the conversation back in the main list
+    // on the next app start. Hidden state wins over either folder so deleted/spam rows cannot leak into the inbox.
+    // A whole list read moments ago on the same connection, for the same range, answers again. A resync any service's
+    // connection starts reads every service, and launch read Google's two folders three times in six seconds (2026-10-04:
+    // about 2.3 s of phone round trips each). The phone is asked again after ListReuse, on a new connection, or for more.
+    public static readonly TimeSpan ListReuse = TimeSpan.FromSeconds(15);
+    public static bool CanReuseList(bool olderPage, int listedConnection, int connection, int listedCount, int count, TimeSpan sinceListed) =>
+        !olderPage && listedConnection == connection && listedCount == count && sinceListed >= TimeSpan.Zero && sinceListed < ListReuse;
+
+    // Past ListReuse and within ListHeldAnswer the held list still answers at once, kept current by the connection's events, while the phone is read
+    // again behind it (GoogleMessagesBackend.RefreshListBehind). Longer than that, or on another connection, the phone is read first as before.
+    public static readonly TimeSpan ListHeldAnswer = TimeSpan.FromMinutes(30);
+    public static bool CanAnswerHeld(bool olderPage, int listedConnection, int connection, int listedCount, int count, TimeSpan sinceListed) =>
+        !olderPage && listedConnection == connection && listedCount == count && sinceListed >= TimeSpan.Zero && sinceListed < ListHeldAnswer;
+
+    // That list as the realtime events since have left it: each conversation's current copy (events replace it, and remove
+    // one deleted), and any conversation an event brought in meanwhile.
+    public static GoogleChat[] HeldList(IReadOnlyCollection<string> listed, IReadOnlyDictionary<string, GoogleChat> current, ISet<string> knownBefore) =>
+        [.. listed.Select(id => current.TryGetValue(id, out var chat) ? chat : null).OfType<GoogleChat>()
+            .Concat(current.Values.Where(chat => !knownBefore.Contains(chat.Id)))
+            .Where(chat => !chat.Hidden).DistinctBy(chat => chat.Id)];
+
+    public static GoogleChat[] MergeConversations(IEnumerable<GoogleChat> inbox, IEnumerable<GoogleChat> archived)
+    {
+        var hidden = inbox.Concat(archived).Where(chat => chat.Hidden).Select(chat => chat.Id).ToHashSet(StringComparer.Ordinal);
+        var merged = new Dictionary<string, GoogleChat>(StringComparer.Ordinal);
+        foreach (var chat in inbox.Where(chat => !chat.Hidden)) merged[chat.Id] = chat;
+        foreach (var chat in archived.Where(chat => !chat.Hidden)) merged[chat.Id] = chat with { Archived = true };
+        return [.. merged.Values.Where(chat => !hidden.Contains(chat.Id))];
+    }
+
+    public static string? Phone(string? input)
+    {
+        var value = new StringBuilder();
+        foreach (var ch in (input ?? "").Trim())
+        {
+            if (ch is >= '0' and <= '9' || ch == '+' && value.Length == 0) value.Append(ch);
+            else if (ch is not (' ' or '-' or '(' or ')' or '.')) return null;
+        }
+        var phone = value.ToString();
+        return phone.TrimStart('+').Length is >= 3 and <= 15 ? phone : null;
+    }
+
+    // Last ten digits: matches the same number written with or without a country code.
+    public static string PhoneKey(string phone)
+    {
+        var digits = new string(phone.Where(char.IsDigit).ToArray());
+        return digits.Length > 10 ? digits[^10..] : digits;
+    }
+
+    // The newest writable one-to-one conversation whose other participant has this number (same last ten digits),
+    // so New chat can open an existing thread without asking the phone.
+    public static GoogleChat? FindDirect(IEnumerable<GoogleChat?> chats, string? phone)
+    {
+        if (Phone(phone) is not { } number) return null;
+        var key = PhoneKey(number);
+        return chats.Where(c => c is { Group: false, ReadOnly: false, Hidden: false } && c.Participants.Count(p => !p.Self) == 1 &&
+                PhoneKey(c.Participants.First(p => !p.Self).Id ?? "") == key)
+            .OrderByDescending(c => c!.At).FirstOrDefault();
+    }
+
+    // recent maps PhoneKey to the latest conversation activity; people you text often rank first.
+    public static IReadOnlyList<ContactPerson> Find(IEnumerable<GoogleContact> source, string query, IReadOnlyDictionary<string, DateTimeOffset>? recent = null)
+    {
+        var phone = Phone(query);
+        var terms = query.Split(' ',StringSplitOptions.RemoveEmptyEntries);
+        var digits = new string(query.Where(char.IsDigit).ToArray());
+        var result = source.Where(c => terms.All(term => c.Name.Contains(term, StringComparison.OrdinalIgnoreCase)) ||
+            digits.Length > 0 && query.All(ch=>char.IsDigit(ch) || " +()- .".Contains(ch)) && new string(c.Phone.Where(char.IsDigit).ToArray()).Contains(digits,StringComparison.Ordinal))
+            .DistinctBy(c => c.Phone)
+            .OrderByDescending(c => recent is not null && recent.TryGetValue(PhoneKey(c.Phone), out var at) ? at : DateTimeOffset.MinValue)
+            .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase).Take(50)
+            .Select(c => new ContactPerson(GoogleModels.Account, c.Phone, c.Name, null, c.Phone, null, false)).ToList();
+        // This is an explicitly entered number, not a claim that it is a saved contact or RCS-capable.
+        if (phone is not null && !result.Any(c => c.Phone == phone))
+            result.Insert(0, new(GoogleModels.Account, phone, phone, null, phone, null, false));
+        return result;
+    }
+
+    /// <summary>The most people New chat offers as Frequent. The helper asks the phone for eight, as upstream does.</summary>
+    public const int FrequentCount = 8;
+
+    // The phone's own ranking of who this account writes to most (the helper's ui.topContacts), as people New chat can
+    // offer. The phone's order is kept, because it is the ranking; a number is offered once however it was written, and
+    // a row without a usable number is dropped, since a Google Messages chat is started by number.
+    public static IReadOnlyList<ContactPerson> Frequent(IEnumerable<GoogleContact> ranked)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<ContactPerson>();
+        foreach (var contact in ranked)
+        {
+            if (Phone(contact.Phone) is not { } phone || !seen.Add(PhoneKey(phone))) continue;
+            var name = string.IsNullOrWhiteSpace(contact.Name) ? phone : contact.Name;
+            result.Add(new(GoogleModels.Account, phone, name, null, phone, null, false));
+            if (result.Count == FrequentCount) break;
+        }
+        return result;
+    }
+
+    public static IReadOnlyList<SearchHit> Search(IEnumerable<GoogleChat> chats, IEnumerable<GoogleMessage> messages, SearchRequest request)
+    {
+        var lookup = chats.Where(c => !c.Hidden && MessageSearch.MatchesChat(GoogleModels.Map(c), request)).ToDictionary(c => c.Id);
+        var query = request.Query.Trim();
+        bool Matches(string? text) => MessageSearch.WordsMatch(text, query);
+        if (request.Kind != SearchKind.Messages)
+            return lookup.Values.Where(c => (request.Kind != SearchKind.Participants && Matches(c.Title + " Google Messages")) || c.Participants.Any(p => !p.Self && (Matches(p.Name) || Matches(p.Id))))
+                .OrderByDescending(c => c.At).ThenBy(c => c.Id, StringComparer.Ordinal)
+                .Select(c => new SearchHit(GoogleModels.Map(c), null)).ToArray();
+        return messages.Where(m => lookup.ContainsKey(m.ChatId))
+            .Select(m => new SearchHit(GoogleModels.Map(lookup[m.ChatId]), GoogleModels.Map(m, lookup[m.ChatId])))
+            .Where(h => MessageSearch.Matches(h.Chat, h.Message!, request))
+            .OrderByDescending(h => h.Message!.Timestamp).ThenBy(h => h.Message!.Id, StringComparer.Ordinal).ToArray();
+    }
+}

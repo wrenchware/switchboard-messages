@@ -1,0 +1,96 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.22000.0</TargetPlatformMinVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- The Windows App Runtime ships inside the app, so a PC needs nothing installed first. Framework-dependent, a
+         clean Windows 11 with .NET but without the runtime package quit at launch with no message at all (0x80670016,
+         Windows Sandbox, 2026-10-02). Only app notifications use the runtime's OS features, and they need no Singleton
+         package, but they do need one file the self-contained layout leaves out (WindowsAppRuntimeInsights below). The
+         installer also publishes .NET self-contained (installer\Build-Installer.ps1). -->
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- Published code is compiled ahead of time, so a launch runs it instead of compiling it first. Measured on this
+         machine: window construction 315–335 ms to 231–269 ms and process start to window 1658–1681 ms to 1539–1566 ms
+         (dev copy), for 18.5 MB more on disk. Applies to publish only; development builds are unchanged. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The installed app is called Messages, and so is everything a person can see of it: the program is Messages.exe
+         (Task Manager's Details tab, Restart Manager, the Run value), its resource index Messages.pri, its data folder
+         %LOCALAPPDATA%\Messages for Windows (AppPaths). Code, namespaces, XAML classes and project names keep NativeBeeper;
+         RootNamespace is set so the generated XAML code does not follow the assembly's new name. Through 0.1.361 the
+         program was NativeBeeper.App.exe, and launch moves what named it (StartupRegistration, NotificationRegistration). -->
+    <AssemblyName>Messages</AssemblyName>
+    <RootNamespace>NativeBeeper.App</RootNamespace>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <Product>Messages</Product>
+    <AssemblyTitle>Messages</AssemblyTitle>
+    <Company>wrenchware</Company>
+    <Version>0.1.413</Version>
+    <!-- Program.cs provides Main so a second launch can redirect to the running app. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <!-- Only explicitly requested development bundles default to isolated data. Normal releases reuse saved accounts. -->
+    <DefineConstants Condition="'$(MergedDevelopmentBuild)' == 'true'">$(DefineConstants);MERGED_DEVELOPMENT_BUILD</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.4.0" />
+    <ProjectReference Include="../NativeBeeper.Presentation/NativeBeeper.Presentation.csproj" />
+    <ProjectReference Include="../NativeBeeper.Backends/NativeBeeper.Backends.csproj" />
+    <ProjectReference Include="../NativeBeeper.Protocol/NativeBeeper.Protocol.csproj" />
+    <ProjectReference Include="../NativeBeeper.Host/NativeBeeper.Host.csproj" />
+    <ProjectReference Include="../NativeBeeper.Windows/NativeBeeper.Windows.csproj" />
+    <ProjectReference Include="../NativeBeeper.Windows.Browser/NativeBeeper.Windows.Browser.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="Services/WindowsTokenStore.cs" />
+    <!-- One sign-in surface, not two: these are the files the stage-2 diagnostic already proved against the live account. -->
+    <Compile Include="../../experiments/Instagram/NativeBeeper.Instagram.Spike/InstagramSignInRules.cs" Link="Services/Instagram/InstagramSignInRules.cs" />
+    <Compile Include="../../experiments/Instagram/NativeBeeper.Instagram.Spike/InstagramSignInWindow.cs" Link="Services/Instagram/InstagramSignInWindow.cs" />
+    <Content Include="../../experiments/GoogleMessages/helper/bin/gmessages-helper.exe" Link="gmessages-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/GoogleMessages/helper/bin/gmessages-helper.exe')" />
+    <Content Include="../../experiments/GoogleMessages/helper/UPSTREAM_LICENSE.txt" Link="GOOGLE_MESSAGES_LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../experiments/Messenger/helper/bin/messenger-helper.exe" Link="messenger-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/Messenger/helper/bin/messenger-helper.exe')" />
+    <Content Include="../../experiments/GoogleVoice/helper/bin/gvoice-helper.exe" Link="gvoice-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/GoogleVoice/helper/bin/gvoice-helper.exe')" />
+    <Content Include="../../experiments/Instagram/helper/bin/instagram-helper.exe" Link="instagram-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/Instagram/helper/bin/instagram-helper.exe')" />
+    <Content Include="../../experiments/Messenger/helper/UPSTREAM_LICENSE.txt" Link="MESSENGER_LICENSE.txt" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/Messenger/helper/UPSTREAM_LICENSE.txt')" />
+    <!-- The Messenger and Instagram helpers both link the modified mautrix-meta; Voice links mautrix-gvoice. Each is AGPL
+         with its own exceptions file, and the installer requires all of them (THIRD_PARTY_NOTICES.md). -->
+    <Content Include="../../third_party/mautrix-meta/LICENSE.exceptions" Link="MAUTRIX_META_LICENSE_EXCEPTIONS.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../experiments/GoogleVoice/helper/UPSTREAM_LICENSE.txt" Link="GOOGLE_VOICE_LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../experiments/GoogleVoice/helper/UPSTREAM_LICENSE_EXCEPTIONS.txt" Link="GOOGLE_VOICE_LICENSE_EXCEPTIONS.txt" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="..\NativeBeeper.Storage\NativeBeeper.Storage.csproj" />
+    <Content Include="Assets\PoweredByGiphy.png" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets\AppIcon.png" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets\EmptyConversation.png" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets\ServiceMessenger.png;Assets\ServiceGoogleMessages.png;Assets\ServiceGoogleVoice.png;Assets\ServiceInstagram.png" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets\AvatarBadge*.png" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="Assets\AppIconUnread.ico;Assets\Badge*.ico" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="..\..\THIRD_PARTY_NOTICES.md" Link="THIRD_PARTY_NOTICES.md" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+  <!-- Windows App SDK 2.4.0 self-contained leaves Microsoft.WindowsAppRuntime.Insights.Resource.dll out of the app (it is
+       in no NuGet package's runtimes folder), and without it AppNotificationManager.Register fails with 0x8007007E, so
+       no notification is ever shown. Proved 2026-10-07 with a bare console app: self-contained fails, framework-dependent
+       registers, and self-contained plus this one file registers. Every release from 0.1.362 (the switch to
+       self-contained) to 0.1.381 shipped without notifications. The file is taken from the same SDK's own runtime MSIX,
+       already restored, so it always matches the runtime the app carries. -->
+  <Target Name="WindowsAppRuntimeInsights" BeforeTargets="AssignTargetPaths" Condition="'$(WindowsAppSDKSelfContained)' == 'true'">
+    <PropertyGroup>
+      <!-- Set by the Microsoft.WindowsAppSDK.Runtime package's props to its own folder. -->
+      <_RuntimeMsix>$(MicrosoftWindowsAppSDKPackageDir)tools\MSIX\win10-$(PlatformTarget)\Microsoft.WindowsAppRuntime.2.msix</_RuntimeMsix>
+      <_RuntimeInsightsDir>$(IntermediateOutputPath)winappruntime\</_RuntimeInsightsDir>
+      <_RuntimeInsights>$(_RuntimeInsightsDir)Microsoft.WindowsAppRuntime.Insights.Resource.dll</_RuntimeInsights>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_RuntimeMsix)')" Text="The Windows App SDK runtime MSIX was not found at $(_RuntimeMsix); notifications need a file from it." />
+    <Unzip SourceFiles="$(_RuntimeMsix)" DestinationFolder="$(_RuntimeInsightsDir)" Include="Microsoft.WindowsAppRuntime.Insights.Resource.dll" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(_RuntimeInsights)')" Text="Microsoft.WindowsAppRuntime.Insights.Resource.dll is not in $(_RuntimeMsix); Windows notifications cannot register without it." />
+    <ItemGroup>
+      <None Include="$(_RuntimeInsights)" Link="Microsoft.WindowsAppRuntime.Insights.Resource.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+</Project>

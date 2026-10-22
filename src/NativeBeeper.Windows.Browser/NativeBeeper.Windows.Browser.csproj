@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Google renewal's browser (SWITCHBOARD.md 3.1c): GoogleBrowserRecovery and WebViewGoogleBrowser, which load a kept Google
+       sign-in profile in WebView2 on a thread the host gives them through IStaQueue. The app (over its DispatcherQueue) and
+       MessagesServer.exe (over its own STA thread) both use it. It names WebView2 and nothing of WinUI or the Windows App SDK, so the
+       server needs no App SDK; NativeBeeper.Windows stays free of WebView2 (a harness check fails if either changes). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.22000.0</TargetPlatformMinVersion>
+    <!-- The WinRT form of WebView2 (the CsWinRT projection and runtimes\win-x64\native_uap\Microsoft.Web.WebView2.Core.dll), the pair the app
+         already publishes: with the App SDK's package dir set the package turns this on by itself, outside the App SDK it is set by hand
+         (here and in every program that references this library without the App SDK). WebView2UseWinRT=true does not build on .NET 10
+         (NETSDK1130). experiments/GoogleBrowserSpike proved this pairing. -->
+    <WebView2EnableCsWinRTProjection>true</WebView2EnableCsWinRTProjection>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Messages" />
+    <InternalsVisibleTo Include="MessagesServer" />
+    <InternalsVisibleTo Include="NativeBeeper.ContractTests" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The version Microsoft.WindowsAppSDK 2.4.0 brings (src/NativeBeeper.App/packages.lock.json), so the app's own copy is this one. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
+    <ProjectReference Include="../NativeBeeper.Core/NativeBeeper.Core.csproj" />
+    <ProjectReference Include="../NativeBeeper.Backends/NativeBeeper.Backends.csproj" />
+  </ItemGroup>
+</Project>

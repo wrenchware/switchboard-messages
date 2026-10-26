@@ -366,3 +366,36 @@ func TestHistoryPageNeverSplitsOneMoment(t *testing.T) {
 		t.Fatalf("an unsplit boundary moved the page to %d messages", len(got))
 	}
 }
+
+func TestPhotoOnlyMessageNamesItselfInTheList(t *testing.T) {
+	s := newStore()
+	s.apply(&table.LSTable{
+		LSDeleteThenInsertThread: []*table.LSDeleteThenInsertThread{{ThreadKey: 7, Snippet: "earlier words", LastActivityTimestampMs: 1000, ThreadType: table.GROUP_THREAD}},
+	})
+	photo := func(id string, at int64, text string) *table.LSTable {
+		return &table.LSTable{
+			LSInsertMessage: []*table.LSInsertMessage{{ThreadKey: 7, MessageId: id, SenderId: 5, Text: text, TimestampMs: at}},
+			LSInsertBlobAttachment: []*table.LSInsertBlobAttachment{{ThreadKey: 7, MessageId: id, AttachmentFbid: id + "-a",
+				AttachmentType: table.AttachmentTypeImage, PreviewUrl: "https://example.test/" + id + ".jpg"}},
+		}
+	}
+	s.apply(photo("m1", 2000, ""))
+	if got := s.threads[7].snippet; got != "Photo" {
+		t.Fatalf("a photo with no words left the list saying %q", got)
+	}
+	// A captioned photo keeps its caption, and an older photo arriving late is not the newest message.
+	s.apply(photo("m2", 3000, "look"))
+	if got := s.threads[7].snippet; got != "look" {
+		t.Fatalf("a captioned photo said %q", got)
+	}
+	s.apply(photo("m0", 1500, ""))
+	if got := s.threads[7].snippet; got != "look" {
+		t.Fatalf("a late photo changed the line to %q", got)
+	}
+	if got := blobLabel(table.AttachmentTypeVideo, "", false, true, false); got != "Video" {
+		t.Fatalf("a video said %q", got)
+	}
+	if got := blobLabel(table.AttachmentTypeFile, "notes.pdf", false, false, false); got != "notes.pdf" {
+		t.Fatalf("a file said %q", got)
+	}
+}

@@ -818,6 +818,13 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 			id: id, name: row.Filename, mime: mime, source: source, preview: preview, playable: row.PlayableUrl,
 			size: row.Filesize, width: row.PreviewWidth, height: row.PreviewHeight, video: video, animated: animated,
 		})
+		// The message row of a picture and nothing else has no words, so the list went on showing the message before it
+		// under the new time. Named as the encrypted connection names its own (encryptedMedia, attachSecure).
+		if current, ok := s.threads[row.ThreadKey]; ok {
+			if found, ok := s.messages[row.ThreadKey][row.MessageId]; ok && found.text == "" && found.timestamp >= current.lastActivity {
+				current.snippet = blobLabel(row.AttachmentType, row.Filename, image, video, animated)
+			}
+		}
 	}
 	// Playable XMA rows are still GIFs/videos. Shared links use picture fields in applyShares, never video bytes
 	// labelled as a thumbnail.
@@ -864,6 +871,25 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 		}
 	}
 	return touched
+}
+
+// The list's words for a message that is only an attachment.
+func blobLabel(kind table.AttachmentType, filename string, image, video, animated bool) string {
+	switch {
+	case kind == table.AttachmentTypeSticker || kind == table.AttachmentTypeSelfieSticker || kind == table.AttachmentTypeThirdPartySticker:
+		return "Sticker"
+	case animated:
+		return "GIF"
+	case video:
+		return "Video"
+	case image:
+		return "Photo"
+	case kind == table.AttachmentTypeAudio || kind == table.AttachmentTypeSoundBite:
+		return "Voice message"
+	case filename != "":
+		return filename
+	}
+	return "File"
 }
 
 // Where a downloadable attachment lives, for the media call.

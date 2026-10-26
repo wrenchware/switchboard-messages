@@ -69,6 +69,13 @@ internal static class GoogleDirectory
     // incoming messages, an MMS group for 14), though its events came, so it appeared and then left at the next refresh.
     // A conversation held here that no list has carried, no older than the list's oldest row, stays in it; one deleted,
     // spammed or blocked leaves by its own event.
+    // 2026-10-26: someone's first message in an SMS group arrived in a conversation of its own while it downloaded (with a
+    // "one-on-one SMS conversation created" marker) and moved to the group a second later, leaving that conversation empty;
+    // shown as a thread with only the sender, and kept by KeepUnlisted. One no list has carried, with only markers left in
+    // it, is that placeholder.
+    public static bool IsLeftPlaceholder(string chatId, bool everListed, IEnumerable<GoogleMessage> held) =>
+        !everListed && !held.Any(message => message.ChatId == chatId && !message.Status.Contains("TOMBSTONE", StringComparison.Ordinal));
+
     public static GoogleChat[] KeepUnlisted(GoogleChat[] list, IEnumerable<GoogleChat> held, IReadOnlySet<string> everListed)
     {
         if (list.Length == 0) return list;

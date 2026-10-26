@@ -20,7 +20,7 @@ internal sealed partial class GoogleMessagesBackend
         await StopHistoryIndexingAsync();
         await archive.ResetAsync(profile);
         await directoryGate.WaitAsync();
-        try { chats.Clear(); messages.Clear(); lock (listedChatIds) listedChatIds.Clear(); placeholders.Clear(); }
+        try { chats.Clear(); messages.Clear(); lock (listedChatIds) listedChatIds.Clear(); placeholders.Clear(); ArrivalHold.Clear(); }
         finally { directoryGate.Release(); }
         await ResetIdentitiesAsync(profile);
         if (connected) StartHistoryIndexing();

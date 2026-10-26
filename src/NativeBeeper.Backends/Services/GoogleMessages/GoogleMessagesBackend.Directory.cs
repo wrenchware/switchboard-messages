@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using NativeBeeper.Core.Backend;
@@ -74,6 +75,15 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
     }
 
     private int refreshingList;
+    // When each conversation was last written or removed on its own, by Stopwatch timestamp: a whole list asked for before then does not undo it
+    // (GoogleDirectory.KeepNewer).
+    private readonly ConcurrentDictionary<string, long> chatWritten = new(StringComparer.Ordinal);
+    private void SetChat(GoogleChat chat) { chats[chat.Id] = chat; chatWritten[chat.Id] = System.Diagnostics.Stopwatch.GetTimestamp(); }
+    private bool RemoveChat(string id, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out GoogleChat removed)
+    {
+        chatWritten[id] = System.Diagnostics.Stopwatch.GetTimestamp();
+        return chats.TryRemove(id, out removed);
+    }
 
     // The held list answered (2026-10-19: a phone opening waited 4-6 s on this read every time); the phone is read now, once at a time, and any
     // conversation whose row it gives differently from the held one, or that is new to it, is announced as a change so clients read it again.
@@ -110,6 +120,7 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
     private async Task<(GoogleChat[] List, string? Next)> ReadListLiveAsync(int count, bool firstPage, int connection, CancellationToken cancellationToken)
     {
         {
+            var asked = System.Diagnostics.Stopwatch.GetTimestamp();
             var result = await ReadAsync("ui.chatList", new { count }, cancellationToken);
             var inbox = result.Deserialize<GoogleChat[]>(Json) ?? [];
             GoogleChat[] archivedChats = [];
@@ -125,6 +136,8 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
             catch (Exception ex) when (ex is not OperationCanceledException && ex is not BackendException { Failure: BackendFailure.AuthenticationRequired })
             { /* The inbox still loads; archived conversations appear on a later refresh. */ }
             var merged = GoogleDirectory.MergeConversations(inbox, archivedChats);
+            var phoneListed = merged;
+            merged = GoogleDirectory.KeepNewer(merged, asked, chatWritten, chats);
             GoogleChat[] list;
             bool advanced;
             // Locked as well as under directoryGate: a realtime event reads it (MessageMoved).
@@ -140,9 +153,9 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
             if (firstPage && archiveRead)
             {
                 if (lastListed is { } before && before.Count == count &&
-                    GoogleDirectory.ListChanges(before.Ids, merged, messages.Values) is { Length: > 0 } changes)
+                    GoogleDirectory.ListChanges(before.Ids, phoneListed, messages.Values) is { Length: > 0 } changes)
                     GoogleMessagesLog.Write($"conversations changed {changes}");
-                lastListed = (count, [.. merged.Select(chat => chat.Id)]);
+                lastListed = (count, [.. phoneListed.Select(chat => chat.Id)]);
             }
             // A list from an earlier connection says nothing of what this one missed while it was down.
             if (connection == Volatile.Read(ref connectionNumber))
@@ -283,7 +296,7 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
         }
         catch (SendException) { throw; }
         catch { throw new SendException(true, "The chat may have been created. Check your conversations before trying again."); }
-        chats[chat.Id] = chat;
+        SetChat(chat);
         ArchiveChats([chat]);
         Publish(new(RealtimeKind.ChatChanged, GoogleModels.Qualify(chat.Id)));
         return GoogleModels.Map(chat);

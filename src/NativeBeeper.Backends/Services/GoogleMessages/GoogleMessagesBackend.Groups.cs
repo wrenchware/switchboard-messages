@@ -35,7 +35,7 @@ internal sealed partial class GoogleMessagesBackend : IGroupBackend
         }
         catch (SendException) { throw; }
         catch { throw new SendException(true, "The group may have been created. Check your conversations before trying again."); }
-        chats[chat.Id] = chat;
+        SetChat(chat);
         ArchiveChats([chat]);
         Publish(new(RealtimeKind.ChatChanged, GoogleModels.Qualify(chat.Id)));
         return GoogleModels.Map(chat);

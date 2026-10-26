@@ -108,6 +108,13 @@ internal static class GoogleDirectory
         return kept.Length == 0 ? list : [.. kept.OrderByDescending(chat => chat.At), .. list];
     }
 
+    // A conversation written on its own after a whole list was asked for (its read, an event, an archive, a delete) keeps that copy, or stays gone:
+    // the list's is older for it. 2026-10-26: a list read behind a phone's opening, asked 1 s before that phone read a conversation and answered
+    // 4 s after, put the unread copy back over the read one, and announced nothing, as it compared itself with a copy older still. 30 s later the
+    // phone and the server's drift check both found it unread, the phone showed it bold, and the read went to Google a second time.
+    public static GoogleChat[] KeepNewer(GoogleChat[] list, long asked, IReadOnlyDictionary<string, long> written, IReadOnlyDictionary<string, GoogleChat> current) =>
+        [.. list.Select(chat => !written.TryGetValue(chat.Id, out var at) || at <= asked ? chat : current.GetValueOrDefault(chat.Id)).OfType<GoogleChat>()];
+
     public static GoogleChat[] MergeConversations(IEnumerable<GoogleChat> inbox, IEnumerable<GoogleChat> archived)
     {
         var hidden = inbox.Concat(archived).Where(chat => chat.Hidden).Select(chat => chat.Id).ToHashSet(StringComparer.Ordinal);

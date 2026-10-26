@@ -50,7 +50,7 @@ internal sealed partial class GoogleMessagesBackend
         GoogleMessagesLog.Write($"event=message state=moved chat={GoogleMessagesLog.Tag(message.ChatId)} from={GoogleMessagesLog.Tag(fromChatId)} message={GoogleMessagesLog.Tag(message.Id)} placeholder={(dropped ? "dropped" : "kept")}{(discarded >= 0 ? $" held_discarded={discarded}" : "")}");
         if (!dropped) { ReleaseIfSettled(fromChatId); return; }
         placeholders[fromChatId] = 0;
-        if (chats.TryRemove(fromChatId, out var gone)) ArchiveChats([gone with { Hidden = true }]);
+        if (RemoveChat(fromChatId, out var gone)) ArchiveChats([gone with { Hidden = true }]);
         if (discarded < 0) Publish(new(RealtimeKind.ChatDeleted, GoogleModels.Qualify(fromChatId)));
     }
 }

@@ -13,7 +13,7 @@ internal sealed partial class GoogleMessagesBackend
         var result=await ReadAsync("ui.chat",new {chatId=GoogleModels.Native(chatId)},token);
         var chat=result.Deserialize<GoogleChat>(Json);
         if(chat is null || chat.Id!=GoogleModels.Native(chatId)) throw new BackendException(BackendFailure.Unavailable,"Conversation could not be refreshed.");
-        chats[chat.Id]=chat;
+        SetChat(chat);
         ArchiveChats([chat]);
         return chat;
     }

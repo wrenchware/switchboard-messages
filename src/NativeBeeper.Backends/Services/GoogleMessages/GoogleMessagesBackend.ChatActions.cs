@@ -19,7 +19,7 @@ internal sealed partial class GoogleMessagesBackend : IChatSettingsBackend, ICha
         if (outcome == "rejected") throw new SendException(false, value ? "Google Messages didn't archive this conversation." : "Google Messages didn't unarchive this conversation.");
         if (outcome != "accepted") throw new SendException(true, "The archive change is unknown. Check your phone before trying again.");
         var chat = (chats.TryGetValue(native, out var known) ? known : await RefreshChatAsync(chatId, cancellationToken)) with { Archived = value };
-        chats[native] = chat;
+        SetChat(chat);
         ArchiveChats([chat]);
         Publish(new(RealtimeKind.ChatChanged, chatId));
         return Summary(chat);
@@ -31,7 +31,7 @@ internal sealed partial class GoogleMessagesBackend : IChatSettingsBackend, ICha
         var outcome = await UpdateChatAsync(native, "delete", cancellationToken);
         if (outcome == "rejected") throw new SendException(false, "Google Messages didn't delete this conversation.");
         if (outcome != "accepted") throw new SendException(true, "The delete outcome is unknown. Check your phone before trying again.");
-        if (chats.TryRemove(native, out var removed)) ArchiveChats([removed with { Hidden = true }]);
+        if (RemoveChat(native, out var removed)) ArchiveChats([removed with { Hidden = true }]);
         else if (archive.Chat(native) is { } saved) ArchiveChats([saved with { Hidden = true }]);
         Publish(new(RealtimeKind.ChatDeleted, chatId));
     }

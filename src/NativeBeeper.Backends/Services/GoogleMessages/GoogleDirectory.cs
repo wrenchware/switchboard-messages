@@ -65,6 +65,19 @@ internal static class GoogleDirectory
             .Concat(current.Values.Where(chat => !knownBefore.Contains(chat.Id)))
             .Where(chat => !chat.Hidden).DistinctBy(chat => chat.Id)];
 
+    // 2026-10-26: Google's list leaves out a new group until the owner sends in it (an RCS group for 3 minutes and two
+    // incoming messages, an MMS group for 14), though its events came, so it appeared and then left at the next refresh.
+    // A conversation held here that no list has carried, no older than the list's oldest row, stays in it; one deleted,
+    // spammed or blocked leaves by its own event.
+    public static GoogleChat[] KeepUnlisted(GoogleChat[] list, IEnumerable<GoogleChat> held, IReadOnlySet<string> everListed)
+    {
+        if (list.Length == 0) return list;
+        var oldest = list.Min(chat => chat.At);
+        var listed = list.Select(chat => chat.Id).ToHashSet(StringComparer.Ordinal);
+        var kept = held.Where(chat => !chat.Hidden && chat.At >= oldest && !listed.Contains(chat.Id) && !everListed.Contains(chat.Id)).ToArray();
+        return kept.Length == 0 ? list : [.. kept.OrderByDescending(chat => chat.At), .. list];
+    }
+
     public static GoogleChat[] MergeConversations(IEnumerable<GoogleChat> inbox, IEnumerable<GoogleChat> archived)
     {
         var hidden = inbox.Concat(archived).Where(chat => chat.Hidden).Select(chat => chat.Id).ToHashSet(StringComparer.Ordinal);

@@ -122,10 +122,11 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
             }
             catch (Exception ex) when (ex is not OperationCanceledException && ex is not BackendException { Failure: BackendFailure.AuthenticationRequired })
             { /* The inbox still loads; archived conversations appear on a later refresh. */ }
-            var list = GoogleDirectory.MergeConversations(inbox, archivedChats);
-            GoogleMessagesLog.Write($"conversations inbox={inbox.Length} archived={archivedChats.Length} visible={list.Length} requested={count}");
-            var advanced = firstPage || list.Any(c => !listedChatIds.Contains(c.Id));
-            foreach (var chat in list) { chats[chat.Id] = chat; listedChatIds.Add(chat.Id); }
+            var merged = GoogleDirectory.MergeConversations(inbox, archivedChats);
+            var list = firstPage ? GoogleDirectory.KeepUnlisted(merged, chats.Values, listedChatIds) : merged;
+            GoogleMessagesLog.Write($"conversations inbox={inbox.Length} archived={archivedChats.Length} visible={list.Length} requested={count}{(list.Length > merged.Length ? $" unlisted_kept={list.Length - merged.Length}" : "")}");
+            var advanced = firstPage || merged.Any(c => !listedChatIds.Contains(c.Id));
+            foreach (var chat in merged) { chats[chat.Id] = chat; listedChatIds.Add(chat.Id); }
             // A list from an earlier connection says nothing of what this one missed while it was down.
             if (connection == Volatile.Read(ref connectionNumber))
             {

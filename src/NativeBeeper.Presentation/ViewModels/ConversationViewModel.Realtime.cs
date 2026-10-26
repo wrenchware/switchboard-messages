@@ -114,11 +114,19 @@ public sealed partial class ConversationViewModel
             // Newest across the whole timeline, as a render decides it: a merged conversation shows one receipt.
             var newest = !Messages.Skip(index + 1).Any(item => !item.Message.IsDeleted && item.Message.Type != "system" && !ScheduledSendRows.Is(item.Message));
             row.ConfirmFrom(new MessageItemViewModel(message,index>0?Messages[index-1].Message:null,chat,lookup,
-                index+1<Messages.Count?Messages[index+1].Message:null,newest,newest, IsMerged, quotes));
+                index+1<Messages.Count?Messages[index+1].Message:null,CarriesReceipt(Messages.Skip(index + 1), message, chat),newest, IsMerged, quotes));
         }
         confirmations[message.ChatId + "\n" + message.Id] = message;
         if (confirmations.Count > 1000) confirmations.Remove(confirmations.Keys.First());
         if (ContainsChat(message.ChatId)) RenderLive();
+    }
+
+    // Whether a sent message just confirmed carries the receipt, as RenderCore decides it: no later message of yours, and no
+    // reply after it once it is known to have arrived.
+    private static bool CarriesReceipt(IEnumerable<MessageItemViewModel> after, ChatMessage message, ChatSummary chat)
+    {
+        var later = after.Select(row => row.Message).Where(m => !m.IsDeleted && m.Type != "system" && !ScheduledSendRows.Is(m)).ToArray();
+        return !later.Any(m => m.IsOutgoing) && !(later.Any(m => !m.IsOutgoing) && ReceiptRules.IsDelivered(message, chat));
     }
 
     private void OutboxBatchResolved(object? sender, ResolvedOutgoingBatch batch)
@@ -139,12 +147,14 @@ public sealed partial class ConversationViewModel
                 current.Messages.Where(message => message.ChatId == batch.Outgoing.ChatId));
             var lookup = batch.Messages.ToDictionary(message => message.Id);
             var prior = Messages.TakeWhile(row => row != local).LastOrDefault()?.Message;
-            // The set's last photo carries the receipt only while nothing, from any linked service, has come after it.
-            var newest = !Messages.SkipWhile(row => row != local).Skip(1).Any(row => !row.Message.IsDeleted && row.Message.Type != "system" && !ScheduledSendRows.Is(row.Message));
+            // The set's last photo carries the receipt as a render would give it (CarriesReceipt); the lock only while nothing,
+            // from any linked service, has come after it.
+            var after = Messages.SkipWhile(row => row != local).Skip(1).ToArray();
+            var newest = !after.Any(row => !row.Message.IsDeleted && row.Message.Type != "system" && !ScheduledSendRows.Is(row.Message));
             var group = batch.Messages.Select((message, index) => new MessageItemViewModel(message,
                 index == 0 ? prior : batch.Messages[index - 1], source, lookup,
                 index + 1 < batch.Messages.Count ? batch.Messages[index + 1] : null,
-                newest && index == batch.Messages.Count - 1, newest && index == batch.Messages.Count - 1, IsMerged, quotes)).ToArray();
+                index == batch.Messages.Count - 1 && CarriesReceipt(after, message, source), newest && index == batch.Messages.Count - 1, IsMerged, quotes)).ToArray();
             PhotoGroups.Apply(group, source.Network, exactPhotoBatches);
             // The existing collage remains the visible final row; hidden member rows can
             // now be inserted before it without passing through a one-photo layout.

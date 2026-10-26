@@ -236,6 +236,7 @@ Pins, mutes, labels, reminders, unread marks and the names and photos you give c
 
 ### Your own names and photos {#custom-names}
 
+- **Under a conversation's title** is the person's number (an RCS number first, then how many more they have), or their username where the service has no number, and a group's size. The small dots beside it are its services, each in your message colour for it; the first is where your next message goes. Point at them for their names, and at a linked conversation's number for every number and service.
 - **Right-click a conversation's title** in its header for **Name this conversation**, plus Copy name, Copy number and Copy account name. Your name is kept on this PC only, up to 128 characters. A person's name follows them across their one-to-one chats; a group keeps its own. **Remove name** puts the service's back. (One-to-one Google Messages chats take their names from your phone's contacts instead.)
 - **Choose contact photo…** in the conversation menu sets your own picture (PNG, JPG or WEBP); **Remove custom photo** undoes it.
 
@@ -402,8 +403,9 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 
 ### Delivery and read status {#receipts}
 
-- Your latest message shows an icon: a clock while sending, one circle sent, two circles delivered, two filled circles read. A red alert means failed, an amber question mark uncertain.
-- **Delivery status as text** in [Appearance](#settings-appearance) shows the words instead. "Not confirmed yet", "May not have sent" and "Edited" always show as words.
+- The last message you sent says how it's doing in words: "Sending…", "Sent", "Delivered" or "Read". Once a reply comes after it, the status goes if the message was delivered, and stays while it says "Sent".
+- Click any message you sent to show its status, and click again to put it away.
+- Turn off **Delivery status as text** in [Appearance](#settings-appearance) for icons instead: a clock while sending, one circle sent, two circles delivered, two filled circles read. A red alert means failed, an amber question mark uncertain. "Not confirmed yet", "May not have sent" and "Edited" always show as words.
 - In groups, small **read faces** sit under the newest message each person has read, and slide down as they read on. Hover for "Read by …".
 - Receipts appear only where the service reports them. Google Voice shows "Sent"; SMS never reports Read.
 
@@ -803,7 +805,7 @@ The server also has a page of its own, for a browser on your home network, once 
 | **Background** | The background colour in dark mode: **Dark**, **Gray**, **Near black**, or a tinted **Slate**, **Navy**, **Midnight** (the darkest blue), **Graphite** or **Moss**. The conversation list, the conversation and incoming bubbles change together, at once. Light mode stays as it is | Dark |
 | **Service icons** | The service badge on conversation photos (<kbd>Ctrl+Shift+I</kbd>) | On |
 | **Link previews** | A picture and description for web links | On |
-| **Delivery status as text** | Sent, Delivered and Read in words instead of icons | Off |
+| **Delivery status as text** | Sent, Delivered and Read in words instead of icons | On |
 
 ### Startup and tray {#settings-startup}
 

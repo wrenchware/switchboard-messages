@@ -9,8 +9,10 @@ public sealed record InterruptedSend(string LocalId, string ChatId, DateTimeOffs
     // The host's name for a send whose connection ended before its answer (SendException.OperationId): all that is needed to ask the
     // host's journal what became of it. Not a message, not a person.
     string? OperationId = null,
-    // Kept by a server for a send it made on a client's behalf (a scheduled one): shown as the server's, and dismissed on the server for every device (outbox.dismiss). Never stored on this PC.
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool OnServer = false);
+    // Kept by a server for a send it made on a client's behalf (a scheduled one, or any device's ordinary send): shown as the server's, and dismissed on the server for every device (outbox.dismiss). Never stored on this PC.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool OnServer = false,
+    // A server's record of a scheduled message it fired (SharedUnsettledSend.ScheduledId), as against an ordinary send from this or another device: only these are worded "scheduled".
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Scheduled = false);
 
 // Remembers sends whose outcome was still open when the app closed, so the next launch can say so instead of silently
 // forgetting them. It never sends anything: each carried send gets one lookup, and one the provider knows is dropped;
@@ -162,9 +164,10 @@ public sealed class InterruptedSends : IDisposable
         if (removed > 0) carried = [.. carried.Where(send => send.ChatId != chatId)];
         if (removed == 0 && server.Length == 0) return;
         // The server's own are dismissed on the server, so they go from every device; one that could not be reached stays drawn, and nothing is sent or asked of a provider either way.
+        // Each await stays on the caller's thread: Changed redraws the composer, and raised from the pool it crashed the app (2026-10-26).
         foreach (var send in server)
         {
-            try { await host!.DismissUnsettledAsync(send.OperationId!).ConfigureAwait(false); hostRows = [.. hostRows.Where(known => !ReferenceEquals(known, send))]; }
+            try { await host!.DismissUnsettledAsync(send.OperationId!); hostRows = [.. hostRows.Where(known => !ReferenceEquals(known, send))]; }
             catch (Exception) { /* still the server's: it stays until the person dismisses it again */ }
         }
         Changed?.Invoke(this, chatId);
@@ -175,8 +178,9 @@ public sealed class InterruptedSends : IDisposable
     public async Task RefreshHostAsync()
     {
         if (host is null) return;
-        var read = (await host.ReadUnsettledAsync().ConfigureAwait(false))
-            .Select(row => new InterruptedSend("server:" + row.OperationId, row.ChatId, row.CreatedAt, null, null, null, row.OperationId, OnServer: true)).ToList();
+        // Not ConfigureAwait(false): Changed below redraws the interface, so it is raised on the thread that asked (the dispatcher's, from RefreshHostQuietAsync).
+        var read = (await host.ReadUnsettledAsync())
+            .Select(row => new InterruptedSend("server:" + row.OperationId, row.ChatId, row.CreatedAt, null, null, null, row.OperationId, OnServer: true, Scheduled: row.ScheduledId is not null)).ToList();
         hostLoaded = true;
         var before = hostRows;
         hostRows = read;

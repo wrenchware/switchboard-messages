@@ -31,13 +31,15 @@ public static class BubbleColours
     // The families a person can colour. Neutral is left out, so recolouring Google's unknown route never recolours it.
     public static IReadOnlyList<BubbleFamily> Families { get; } = [.. Enum.GetValues<BubbleFamily>().Where(family => family != BubbleFamily.Neutral)];
 
-    // RCS, SMS and the unknown route keep the exact values they had before colours could be chosen.
+    // The unknown route keeps the exact values it had before colours could be chosen. RCS, SMS and Messenger are the owner's (2026-10-26): Google's
+    // RCS blue and Messenger's bright blue had been too close to tell apart, so RCS went dark, Messenger lighter, and SMS between them; one value for
+    // both themes. Messenger's bright blue carries the dark ink, since white on it reads at only 3.3:1.
     public static IReadOnlyList<BubbleSwatch> Swatches { get; } =
     [
-        new("blue", "Blue", new(0x0B, 0x57, 0xD0), new(0x1B, 0x4F, 0xB0)),
-        new("light-blue", "Light blue", new(0xD3, 0xE3, 0xFD), new(0xA8, 0xC7, 0xFA)),
+        new("blue", "Blue", new(0x07, 0x35, 0x80), new(0x07, 0x35, 0x80)),
+        new("light-blue", "Light blue", new(0x7C, 0xAC, 0xF8), new(0x7C, 0xAC, 0xF8)),
         new("muted-blue", "Muted blue", new(0xC6, 0xD9, 0xF4), new(0x25, 0x42, 0x6E)),
-        new("bright-blue", "Bright blue", new(0x08, 0x66, 0xFF), new(0x1A, 0x66, 0xE0)),
+        new("bright-blue", "Bright blue", new(0x0E, 0x92, 0xEB), new(0x0E, 0x92, 0xEB)),
         new("purple", "Purple", new(0x83, 0x3A, 0xB4), new(0x8E, 0x44, 0xC4)),
         new("green", "Green", new(0x18, 0x80, 0x38), new(0x13, 0x73, 0x33)),
         new("teal", "Teal", new(0x00, 0x79, 0x6B), new(0x00, 0x69, 0x5C)),
@@ -161,16 +163,23 @@ public static class BubbleColours
 
     // The default highlight is the accent colour, which all but vanishes on a blue bubble. A darker shade of the bubble's
     // own colour shows against the bubble and carries white text, which is how Windows draws selected text. On a pale
-    // bubble it stops at a middle tone, where the dark ink also stays legible in case the text keeps its own colour.
+    // bubble it stops at a middle tone, where the dark ink also stays legible in case the text keeps its own colour. On a bubble already dark (the
+    // owner's navy RCS) the first shade dark enough for white text was too near the bubble to see, so it goes on darkening until it shows. A
+    // bright one carrying the dark ink (the owner's Messenger blue) was darkened past where that ink reads, so shades lighter than 40% are tried after.
     public static Rgba SelectionHighlight(Rgba fill)
     {
-        for (var amount = 0.4; amount < 1; amount += 0.05)
+        var dark = !LightInk(fill);
+        foreach (var amount in Enumerable.Range(8, 12).Concat(Enumerable.Range(1, 7).Reverse()).Select(step => step * 0.05))
         {
             var shade = CardTinting.Mix(Black, fill.Opaque, amount);
-            if (Contrast(shade, White) >= MinimumContrast) return shade;
+            if (Contrast(shade, White) >= MinimumContrast && Contrast(shade, fill.Opaque) >= HighlightShows && (!dark || Contrast(shade, DarkInk(shade)) >= 3))
+                return shade;
         }
         return Black;
     }
+
+    // How far the highlight stands from its bubble, as a contrast ratio: enough to see where the selection is.
+    public const double HighlightShows = 1.4;
 
     // The console's background in each theme: what ShellSurfaceBrush resolves to in App.xaml.
     public static readonly Rgba ConsoleLight = new(0xF3, 0xF3, 0xF3);

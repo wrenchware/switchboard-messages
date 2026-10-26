@@ -88,23 +88,33 @@ public sealed partial class ComposerViewModel : ObservableObject, INoticeSource,
     public bool HasRejectedMessage => CanRestore();
     // Sends this conversation still had open when the app last closed, which no lookup has since confirmed.
     public bool HasInterruptedSend => chatId is not null && interruptedSends?.ForChat(chatId).Count > 0;
-    public string InterruptedSendText
+    public string InterruptedSendText => InterruptedSendTextOf(chatId is null || interruptedSends is null ? [] : interruptedSends.ForChat(chatId));
+    public static string InterruptedSendTextOf(IReadOnlyList<InterruptedSend> sends)
     {
-        get
+        // Sends a server made that may not have gone (stage 6 slice 11): the server's word, not "before Messages closed". Since its ordinary sends are
+        // recorded there too (from this PC or the phone), only the ones it fired from the schedule say "scheduled".
+        if (sends.Count > 0 && sends.All(send => send.OnServer))
         {
-            var sends = chatId is null || interruptedSends is null ? [] : interruptedSends.ForChat(chatId);
-            // Scheduled messages a server sent for this person that may not have gone (stage 6 slice 11): the server's word, not "before Messages closed".
-            if (sends.Count > 0 && sends.All(send => send.OnServer))
-                return sends.Count == 1
-                    ? $"A scheduled message sent at {sends[0].CreatedAt.ToLocalTime():t} may not have gone through. Check the conversation before sending it again."
-                    : $"{sends.Count} scheduled messages may not have gone through. Check the conversation before sending them again.";
-            return sends.Count switch
-            {
-                0 => "",
-                1 => $"A message sent at {sends[0].CreatedAt.ToLocalTime():t} wasn't confirmed before Messages closed. Check the conversation before sending it again.",
-                _ => $"{sends.Count} messages sent before Messages closed weren't confirmed. Check the conversation before sending them again."
-            };
+            var kind = sends.All(send => send.Scheduled) ? "scheduled message" : "message";
+            return sends.Count == 1
+                ? $"A {kind} sent {SentWhen(sends[0].CreatedAt)} may not have gone through. Check the conversation before sending it again."
+                : $"{sends.Count} {kind}s may not have gone through. Check the conversation before sending them again.";
         }
+        return sends.Count switch
+        {
+            0 => "",
+            1 => $"A message sent {SentWhen(sends[0].CreatedAt)} wasn't confirmed before Messages closed. Check the conversation before sending it again.",
+            _ => $"{sends.Count} messages sent before Messages closed weren't confirmed. Check the conversation before sending them again."
+        };
+    }
+    // A warning is kept up to a week, so a bare time can point at the wrong day (owner, 2026-10-26: one "sent at 5:19 PM" was days old).
+    public static string SentWhen(DateTimeOffset at, DateTimeOffset? now = null)
+    {
+        var local = at.ToLocalTime();
+        var today = (now ?? DateTimeOffset.Now).ToLocalTime().Date;
+        if (local.Date == today) return $"at {local:t}";
+        if (local.Date == today.AddDays(-1)) return $"yesterday at {local:t}";
+        return $"on {local:ddd, MMM d} at {local:t}";
     }
     [RelayCommand]
     private async Task DismissInterruptedSendAsync() { if (chatId is not null && interruptedSends is not null) await interruptedSends.DismissAsync(chatId); }

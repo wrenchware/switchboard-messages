@@ -65,6 +65,8 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
     [ObservableProperty] private string? avatarOverrideId;
     [ObservableProperty] private string subtitle = "Choose a chat to read its history.";
     [ObservableProperty] private string? subtitleDetail;
+    /// <summary>The services the conversation is reached through, drawn beside the subtitle (ConversationHeaderText.Dots).</summary>
+    [ObservableProperty] private IReadOnlyList<HeaderDot> subtitleDots = [];
     [ObservableProperty] private string status = "";
     // See INoticeSource: shown unless it is progress or success, which the conversation itself already reports.
     public bool StatusIsAdvisory { get; private set; }
@@ -184,6 +186,7 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
         // list, and the header showed it until the first render replaced it.
         if (merges is not null && MergedConversations.IsMerged(chat.Id)) (Subtitle, SubtitleDetail) = MergedHeader(chat.Id);
         else { Subtitle = ConversationHeaderText.Subtitle(chat, chat.ExpectedTransport); SubtitleDetail = null; }
+        UpdateHeaderDots();
         HasConversation = true; Advisory("Loading history…");
         OnPropertyChanged(nameof(Accounts));
         try
@@ -499,6 +502,25 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
 
     private (string Subtitle, string Detail) MergedHeader(string chatId) =>
         ConversationHeaderText.Merged(merges!.Members(chatId), merges.ServiceRouteLabel, sourceFilter is null ? null : SourceFilterLabel);
+    // Replaced only when they change, so a render that changes nothing redraws nothing.
+    private void UpdateHeaderDots()
+    {
+        if (CurrentChat is not { } chat) { SubtitleDots = []; return; }
+        var dots = ConversationHeaderText.Dots(merges is not null && MergedConversations.IsMerged(chat.Id) ? merges.Members(chat.Id) : [chat], sendChatId);
+        if (!dots.SequenceEqual(SubtitleDots)) SubtitleDots = dots;
+    }
+
+    // Sent messages whose receipt a click put on show, by MessageIdentity.Key: a row is drawn afresh on every render and its
+    // container recycled, so the choice is kept here. Another click puts it away.
+    private readonly HashSet<string> receiptsShown = [];
+
+    public void ToggleReceipt(MessageItemViewModel row)
+    {
+        if (!row.Message.IsOutgoing || row.Message.IsDeleted) return;
+        var key = MessageIdentity.Key(row.Message);
+        if (!receiptsShown.Remove(key)) receiptsShown.Add(key);
+        Render(preserveAnchor: true);
+    }
 
     private void Render(bool preserveAnchor, bool preserveRecovery = false)
     {
@@ -520,6 +542,7 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
         ExpectedTransport = IsMerged ? SendChat?.ExpectedTransport : current.Chat.ExpectedTransport;
         if (IsMerged && merges is not null) (Subtitle, SubtitleDetail) = MergedHeader(current.Chat.Id);
         else { Subtitle = ConversationHeaderText.Subtitle(current.Chat, current.Chat.ExpectedTransport); SubtitleDetail = null; }
+        UpdateHeaderDots();
         // A provider that says who read each message but not where each reader stopped gets its faces placed here. One
         // service shown on its own (SourceFilter) leaves every other member's rows out, system lines included.
         var shown = ShownChatIds();
@@ -531,11 +554,6 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
         HistoryChanged?.Invoke(this, preserveAnchor);
         ChatMessage? previous = null;
         var desired = new List<MessageItemViewModel>();
-        // Like Google Messages: the receipt sits under your newest message only while it is the newest in the
-        // conversation. Once someone replies, the reply says it was seen and the old receipt goes. A merged conversation
-        // is one conversation on screen, so this is its newest message across every linked service: one receipt, in
-        // that message's own service's terms, rather than one per service. Older messages keep theirs in the tooltip
-        // and Message details.
         var newest=visible.LastOrDefault(m=>!m.IsDeleted && m.Type!="system" && !ScheduledSendRows.Is(m));
         var newestKey = newest is null ? null : MessageIdentity.Key(newest);
         // The lock goes under the newest message, as Google shows it, and only when encryption is positively known —
@@ -543,14 +561,24 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
         var chat=WithEncryption(current.Chat, current.Messages);
         var sourceChats = IsMerged ? visible.Select(m => m.ChatId).Distinct().ToDictionary(id => id, id =>
             WithEncryption(SourceChat(id), current.Messages.Where(m => m.ChatId == id))) : null;
+        // One receipt, on your newest sent message (owner, 2026-10-26; the phone's too). A reply after it retires it once
+        // it is known to have arrived; while it says only Sent or Sending it stays, since the reply proves nothing of it. A
+        // merged conversation is one conversation on screen: one receipt across every linked service, in that message's own
+        // service's terms. A click on a bubble shows its own (ToggleReceipt); older ones are also in the tooltip and Message details.
+        var lastSent = visible.LastOrDefault(m => m.IsOutgoing && !m.IsDeleted && m.Type != "system" && !ScheduledSendRows.Is(m));
+        var lastSentKey = lastSent is null ? null : MessageIdentity.Key(lastSent);
+        var replied = lastSent is not null && visible.SkipWhile(m => !ReferenceEquals(m, lastSent)).Skip(1).Any(m => !m.IsOutgoing && !m.IsDeleted && m.Type != "system");
+        if (lastSent is not null && replied && ReceiptRules.IsDelivered(lastSent, sourceChats?.GetValueOrDefault(lastSent.ChatId) ?? chat)) lastSentKey = null;
         for(var index=0;index<visible.Length;index++)
         {
             var message=visible[index];
             var source = sourceChats?.GetValueOrDefault(message.ChatId) ?? chat;
             // By identity, not id: two linked services can use the same id for different messages.
-            var isNewest = newestKey is not null && MessageIdentity.Key(message) == newestKey;
+            var key = MessageIdentity.Key(message);
+            var isNewest = newestKey is not null && key == newestKey;
+            var carries = key == lastSentKey || message.IsOutgoing && receiptsShown.Contains(key);
             desired.Add(new(message,previous,source,lookups[message.ChatId],index+1<visible.Length?visible[index+1]:null,
-                isNewest && message.IsOutgoing, isNewest, IsMerged, quotes));
+                carries, isNewest, IsMerged, quotes));
             previous=message;
         }
         PhotoGroups.Apply(desired, IsMerged ? null : chat.Network, exactPhotoBatches);
@@ -728,7 +756,7 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
         mergedRecoveryExpired = false; mergedRecoveryWarning = null;
         ResetSourceFilter(); ClearRouteNotice();
         Messages.Clear(); Members.Clear(); SelectedMember = null; HasMembers = false; HasMore = false;
-        HasConversation = false; IsBusy = false; AvatarUrl = AvatarChatId = AvatarOverrideId = null; Title = "Your conversations"; Subtitle = "Choose a chat to read its history."; SubtitleDetail = null; Status = "";
+        HasConversation = false; IsBusy = false; AvatarUrl = AvatarChatId = AvatarOverrideId = null; Title = "Your conversations"; Subtitle = "Choose a chat to read its history."; SubtitleDetail = null; SubtitleDots = []; Status = "";
         OnPropertyChanged(nameof(Accounts));
     }
     // There is deliberately no Clear: the history cache is shared with every other window's conversation, so leaving

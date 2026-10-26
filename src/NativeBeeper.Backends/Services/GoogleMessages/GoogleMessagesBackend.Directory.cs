@@ -40,6 +40,8 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
     // The last whole list, for a resync moments later on the same connection (GoogleDirectory.CanReuseList).
     private sealed record ListHeld(int Connection, int Count, long At, string[] Ids, HashSet<string> Known, string? Next);
     private ListHeld? lastList;
+    // The phone's own last whole list, by the count asked for, for the next to say what joined and left it (GoogleDirectory.ListChanges).
+    private (int Count, string[] Ids)? lastListed;
 
     public async Task<Page<ChatSummary>> GetChatsAsync(string? olderThan = null, CancellationToken cancellationToken = default)
     {
@@ -133,6 +135,15 @@ internal sealed partial class GoogleMessagesBackend : ISearchBackend, ISearchSco
                 foreach (var chat in merged) { chats[chat.Id] = chat; listedChatIds.Add(chat.Id); placeholders.TryRemove(chat.Id, out _); }
             }
             GoogleMessagesLog.Write($"conversations inbox={inbox.Length} archived={archivedChats.Length} visible={list.Length} requested={count}{(list.Length > merged.Length ? $" unlisted_kept={list.Length - merged.Length}" : "")}");
+            // 2026-10-26: the phone's own list gained a row and lost it again, more than once, and a placeholder thread came back
+            // with it; which conversation it was could not be told. Each whole list says, by tag, what came and went since the last.
+            if (firstPage && archiveRead)
+            {
+                if (lastListed is { } before && before.Count == count &&
+                    GoogleDirectory.ListChanges(before.Ids, merged, messages.Values) is { Length: > 0 } changes)
+                    GoogleMessagesLog.Write($"conversations changed {changes}");
+                lastListed = (count, [.. merged.Select(chat => chat.Id)]);
+            }
             // A list from an earlier connection says nothing of what this one missed while it was down.
             if (connection == Volatile.Read(ref connectionNumber))
             {

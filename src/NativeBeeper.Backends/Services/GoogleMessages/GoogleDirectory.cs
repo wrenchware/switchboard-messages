@@ -76,6 +76,29 @@ internal static class GoogleDirectory
     public static bool IsLeftPlaceholder(string chatId, bool everListed, IEnumerable<GoogleMessage> held) =>
         !everListed && !held.Any(message => message.ChatId == chatId && !message.Status.Contains("TOMBSTONE", StringComparison.Ordinal));
 
+    // What joined and left the phone's own list between two whole lists, as one-way tags and nothing said in them: for each
+    // that joined, its place from the newest (0), whether it is a group, how many people, and what this server holds of it
+    // (none, markers only, or a count of messages). At most five each way; the rest as a count. Empty when nothing changed.
+    public static string ListChanges(IReadOnlyCollection<string> before, GoogleChat[] after, IEnumerable<GoogleMessage> held)
+    {
+        const int Shown = 5;
+        var was = before.ToHashSet(StringComparer.Ordinal);
+        var now = after.Select(chat => chat.Id).ToHashSet(StringComparer.Ordinal);
+        var joined = after.Select((chat, place) => (chat, place)).Where(row => !was.Contains(row.chat.Id)).ToArray();
+        var left = before.Where(id => !now.Contains(id)).ToArray();
+        if (joined.Length == 0 && left.Length == 0) return "";
+        var heldBy = held.GroupBy(message => message.ChatId, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToArray(), StringComparer.Ordinal);
+        string Held(string id) => !heldBy.TryGetValue(id, out var list) ? "none"
+            : list.All(message => message.Status.Contains("TOMBSTONE", StringComparison.Ordinal)) ? "markers"
+            : list.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        static string More(int count) => count > Shown ? $",+{count - Shown}" : "";
+        var joinedWords = string.Join(",", joined.Take(Shown).Select(row =>
+            $"{GoogleMessagesLog.Tag(row.chat.Id)}(place={row.place} group={(row.chat.Group ? "yes" : "no")} people={row.chat.Participants?.Length ?? 0} held={Held(row.chat.Id)})")) + More(joined.Length);
+        var leftWords = string.Join(",", left.Take(Shown).Select(id => GoogleMessagesLog.Tag(id))) + More(left.Length);
+        return $"joined={(joined.Length == 0 ? "none" : joinedWords)} left={(left.Length == 0 ? "none" : leftWords)}";
+    }
+
     public static GoogleChat[] KeepUnlisted(GoogleChat[] list, IEnumerable<GoogleChat> held, IReadOnlySet<string> everListed)
     {
         if (list.Length == 0) return list;

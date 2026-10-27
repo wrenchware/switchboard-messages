@@ -32,6 +32,9 @@ type viewChat struct {
 	Archived          bool              `json:"archived"`
 	Hidden            bool              `json:"hidden"`
 	AvatarColor       string            `json:"avatarColor,omitempty"`
+	// Who wrote a group's newest message, as Google names them beside its words: the list's line then says who it was
+	// from the start, as the message itself does once read. Empty for the account's own and outside groups.
+	PreviewSender string `json:"previewSender,omitempty"`
 }
 type viewMessage struct {
 	ReplyTo   string         `json:"replyTo,omitempty"`
@@ -93,7 +96,15 @@ func mapChat(c *gmproto.Conversation) viewChat {
 	if title == "" {
 		title = "Conversation"
 	}
-	return viewChat{expectedTransport(c), c.GetType().String(), c.GetDefaultOutgoingID(), strings.HasPrefix(c.GetLatestMessage().GetLatestMessageStatus().GetStatus().String(), "OUTGOING_"), c.GetReadOnly(), c.GetConversationID(), title, participants, c.GetLatestMessage().GetDisplayContent(), time.UnixMicro(c.GetLastMessageTimestamp()).UTC(), c.GetUnread(), c.GetIsGroupChat(), chatArchived(c), chatHidden(c), avatarColor(c)}
+	return viewChat{expectedTransport(c), c.GetType().String(), c.GetDefaultOutgoingID(), strings.HasPrefix(c.GetLatestMessage().GetLatestMessageStatus().GetStatus().String(), "OUTGOING_"), c.GetReadOnly(), c.GetConversationID(), title, participants, c.GetLatestMessage().GetDisplayContent(), time.UnixMicro(c.GetLastMessageTimestamp()).UTC(), c.GetUnread(), c.GetIsGroupChat(), chatArchived(c), chatHidden(c), avatarColor(c), previewSender(c)}
+}
+
+func previewSender(c *gmproto.Conversation) string {
+	latest := c.GetLatestMessage()
+	if !c.GetIsGroupChat() || latest.GetFromMe() != 0 || strings.HasPrefix(latest.GetLatestMessageStatus().GetStatus().String(), "OUTGOING_") {
+		return ""
+	}
+	return strings.TrimSpace(latest.GetDisplayName())
 }
 
 // Who the conversation is actually with. Conversation.otherParticipants is Google's own list of

@@ -13,9 +13,24 @@ public enum BubbleReason { GoogleRoute, Service, LinkedNeutral, UnknownService }
 public readonly record struct BubbleResolution(BubbleFamily Family, BubbleReason Reason);
 
 // A named colour with a variant for each theme. Both variants carry readable text; the checks hold every swatch to it.
-public sealed record BubbleSwatch(string Id, string Name, Rgba Light, Rgba Dark)
+public sealed record BubbleSwatch(string Id, string Name, Rgba Light, Rgba Dark, BubbleGradient? Gradient = null)
 {
     public Rgba For(bool dark) => dark ? Dark : Light;
+}
+
+// A CSS linear gradient a bubble is painted with in place of its solid colour, which still decides its ink and colours
+// the send button, dots and tags. Stops are fractions of the gradient line.
+public sealed record BubbleGradient(Rgba From, double FromStop, Rgba To, double ToStop, double Degrees)
+{
+    // Where the line runs on a width by height box, as a browser draws it: through the centre at the CSS angle (0 points
+    // up, clockwise), long enough that its ends' perpendiculars pass through the far corners.
+    public (double X1, double Y1, double X2, double Y2) Line(double width, double height)
+    {
+        var radians = Degrees * Math.PI / 180;
+        var (dx, dy) = (Math.Sin(radians), -Math.Cos(radians));
+        var half = (Math.Abs(width * dx) + Math.Abs(height * dy)) / 2;
+        return (width / 2 - dx * half, height / 2 - dy * half, width / 2 + dx * half, height / 2 + dy * half);
+    }
 }
 
 public static class BubbleColours
@@ -33,10 +48,12 @@ public static class BubbleColours
 
     // The unknown route keeps the exact values it had before colours could be chosen. RCS, SMS and Messenger are the owner's (2026-10-26): Google's
     // RCS blue and Messenger's bright blue had been too close to tell apart, so RCS went dark, Messenger lighter, and SMS between them; one value for
-    // both themes. Messenger's bright blue carries the dark ink, since white on it reads at only 3.3:1.
+    // both themes. Messenger's bright blue carries the dark ink, since white on it reads at only 3.3:1. Blue is drawn as
+    // Messages for Web draws RCS, linear-gradient(130deg, #0842a0 30%, #07347e 95%) (owner, 2026-10-26: the solid navy
+    // had been picked off that gradient).
     public static IReadOnlyList<BubbleSwatch> Swatches { get; } =
     [
-        new("blue", "Blue", new(0x07, 0x35, 0x80), new(0x07, 0x35, 0x80)),
+        new("blue", "Blue", new(0x07, 0x35, 0x80), new(0x07, 0x35, 0x80), new(new(0x08, 0x42, 0xA0), .30, new(0x07, 0x34, 0x7E), .95, 130)),
         new("light-blue", "Light blue", new(0x7C, 0xAC, 0xF8), new(0x7C, 0xAC, 0xF8)),
         new("muted-blue", "Muted blue", new(0xC6, 0xD9, 0xF4), new(0x25, 0x42, 0x6E)),
         new("bright-blue", "Bright blue", new(0x0E, 0x92, 0xEB), new(0x0E, 0x92, 0xEB)),
@@ -100,6 +117,14 @@ public static class BubbleColours
         if (family == BubbleFamily.Neutral) choice = null;
         if (TryParseCustom(choice, out var custom)) return Readable(custom).Colour;
         return (Swatch(choice) ?? Swatch(DefaultSwatch(family))!).For(dark);
+    }
+
+    // The gradient a bubble of this family is painted with, when its colour is a swatch that has one. A custom colour and
+    // the neutral bubble are always flat.
+    public static BubbleGradient? Gradient(BubbleFamily family, string? choice)
+    {
+        if (family == BubbleFamily.Neutral || TryParseCustom(choice, out _)) return null;
+        return (Swatch(choice) ?? Swatch(DefaultSwatch(family))!).Gradient;
     }
 
     // What is worth saving: nothing for the default, so a later change of default reaches people who never chose.

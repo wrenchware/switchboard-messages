@@ -159,7 +159,7 @@ Press <kbd>Ctrl+/</kbd> any time for the list inside the app. Shortcuts don't ru
 Two dropdowns sit above the list.
 
 - **View**: **Messages**, **Unread** (<kbd>Ctrl+U</kbd>), **Archive**, **Spam** and **Drafts**; then your labels, once you have one: **All labels**, a tick for each label (choose several and a chat with any of them shows) and **Manage labels…**; then **Saved**, which opens your [saved messages](#saved-messages). With more than eight labels they fold into a **Labels** submenu. While a label is chosen the dropdown names it after its colour dot, for example "Work", "Unread · Work" or "2 labels".
-- **Services**: **All services**, then each service, or each account when you have several of one (Voice numbers are listed separately). Tick several at once. Unread counts sit on the right; they leave out muted, archived and spam conversations. With Google Voice connected there's also **Type**: All types, Messages, Calls or Voicemails. **Clear filters** appears while a filter is on, and **Show service badges** (<kbd>Ctrl+Shift+I</kbd>) is here too.
+- **Services**: **All services**, then each service, or each account when you have several of one (Voice numbers are listed separately). Tick several at once. Unread counts sit on the right; they leave out muted, archived and spam conversations. With Google Voice connected there's also **Type**: All types, Messages, Calls or Voicemails (only **Calls** lists calls you answered or made). **Clear filters** appears while a filter is on, and **Show service badges** (<kbd>Ctrl+Shift+I</kbd>) is here too.
 
 A dropdown that's filtering says so, for example "Services (2)", in your accent colour. Filters look only at conversations already loaded: **Load more conversations** at the bottom of the list fetches older ones. When a filter hides everything, the list offers **Clear filters** and **Load more conversations**.
 
@@ -432,6 +432,7 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 
 Google Voice calls appear as cards rather than a text conversation.
 
+- A **missed call** or **voicemail** gets a row in the list. A call you answered or made, or one nobody picked up, doesn't, and never counts as unread: choose **Calls** under **Type** in the Services dropdown to see every call, or search for it. The phone app hides them too; searching there finds them.
 - A coloured badge (red missed, blue voicemail, green connected), a headline such as "Missed voice call", and the full date.
 - **Voicemail** shows Google's transcript and a player. The audio downloads only when you press play. **Save** keeps it as a file named after the caller and the date.
 - **Send a message to *name*** opens the text conversation. If both Google Voice and your phone's Google Messages can reach them, Messages asks which to use.

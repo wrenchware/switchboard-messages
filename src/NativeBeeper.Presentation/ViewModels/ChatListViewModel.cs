@@ -184,6 +184,11 @@ public sealed partial class ChatListViewModel(IChatReader reader, PrivateState? 
         ChatKind.Voicemails => callKind == "voicemail",
         _ => true,
     };
+    // Google Voice keeps every call as a thread of its own, and a business that called twice was two rows of "Voice call"
+    // (2026-10-27). A call answered, made or not picked up leaves nothing to do, so it has no row, unread or badge of its
+    // own: Calls lists it with the rest. A missed call and a voicemail keep theirs. The phone's list follows the same rule.
+    public static bool IsQuietCall(ChatSummary chat) => chat.IsCallHistory && chat.Preview?.CallKind is "incoming" or "outgoing" or "unanswered";
+    private bool Listed(ChatSummary chat) => Kind == ChatKind.Calls || !IsQuietCall(chat);
     public void SetAccounts(IEnumerable<ChatAccount> accounts)
     {
         var prior = selectedFilters;
@@ -411,7 +416,7 @@ public sealed partial class ChatListViewModel(IChatReader reader, PrivateState? 
         multipleSources = CountSources();
         foreach (var chat in presented.Where(c => MergedConversations.IsMerged(c.Id) ||
                 !MergedConversations.IsMerged(c.MergedIntoChatId) && (filtered ? c.MemberChatIds.Count == 0 : c.MergedIntoChatId is null || !parentIds.Contains(c.MergedIntoChatId)))
-            .Where(MatchesFilters)
+            .Where(MatchesFilters).Where(Listed)
             .Where(c => Scope == InboxScope.Inbox && c.Id == promotedChatId || Scope switch { InboxScope.Spam => c.IsSpam, InboxScope.Archived => c.IsArchived && !c.IsSpam, InboxScope.Unread => !c.IsArchived && !c.IsSpam && (c.UnreadCount > 0 || c.Id == heldUnreadChatId),
                 InboxScope.Drafts => !c.IsSpam && (HasDraft(c) || c.Id == heldDraftChatId), _ => !c.IsArchived && !c.IsSpam })
             .OrderByDescending(c => c.IsPinned).ThenBy(c => c.IsPinned ? PinnedRank(c.Id) : int.MaxValue)
@@ -470,7 +475,7 @@ public sealed partial class ChatListViewModel(IChatReader reader, PrivateState? 
     private void UpdateUnread(ChatSummary[] presented, HashSet<string> parentIds)
     {
         lastPresented = presented; lastParentIds = parentIds;
-        var unread = presented.Where(c => c.UnreadCount > 0 && !c.IsMuted && !c.IsArchived && !c.IsSpam && (c.MergedIntoChatId is null || !parentIds.Contains(c.MergedIntoChatId))).ToArray();
+        var unread = presented.Where(c => c.UnreadCount > 0 && !c.IsMuted && !c.IsArchived && !c.IsSpam && !IsQuietCall(c) && (c.MergedIntoChatId is null || !parentIds.Contains(c.MergedIntoChatId))).ToArray();
         var shown = unread.OrderByDescending(c => c.LastActivity).ThenBy(c => c.Id, StringComparer.Ordinal).Take(UnreadChatsShown).ToArray();
         // A conversation replacing another in the list with the count unchanged is still a change to what the tray shows.
         var same = unread.Length == UnreadChatCount && shown.Length == UnreadChats.Count && shown.Select(c => c.Id).SequenceEqual(UnreadChats.Select(c => c.Id), StringComparer.Ordinal);
@@ -493,7 +498,7 @@ public sealed partial class ChatListViewModel(IChatReader reader, PrivateState? 
         var count = 0;
         foreach (var chat in lastPresented)
         {
-            if (chat.MemberChatIds.Count > 0) continue;
+            if (chat.MemberChatIds.Count > 0 || IsQuietCall(chat)) continue;
             if (filter.AccountId is { } account && chat.AccountId != account) continue;
             if (filter.Network is { } network && !string.Equals(chat.Network, network, StringComparison.OrdinalIgnoreCase)) continue;
             var parent = chat.MergedIntoChatId is { } parentId ? parents.GetValueOrDefault(parentId) : null;
@@ -505,7 +510,7 @@ public sealed partial class ChatListViewModel(IChatReader reader, PrivateState? 
     }
     private void UpdatePinned(IReadOnlyList<ChatSummary> presented, HashSet<string> parentIds)
     {
-        InboxChats = presented.Where(c => !c.IsArchived && !c.IsSpam && (c.MergedIntoChatId is null || !parentIds.Contains(c.MergedIntoChatId))).ToArray();
+        InboxChats = presented.Where(c => !c.IsArchived && !c.IsSpam && !IsQuietCall(c) && (c.MergedIntoChatId is null || !parentIds.Contains(c.MergedIntoChatId))).ToArray();
         PinnedChats = InboxChats.Where(c => c.IsPinned)
             .OrderBy(c => PinnedRank(c.Id)).ThenByDescending(c => c.LastActivity).ThenBy(c => c.Id, StringComparer.Ordinal).ToArray();
         var signature = string.Join("\n", PinnedChats.Select(c => c.Id + "\t" + c.Title));

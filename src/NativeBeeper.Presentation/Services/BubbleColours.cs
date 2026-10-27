@@ -48,7 +48,7 @@ public static class BubbleColours
 
     // The unknown route keeps the exact values it had before colours could be chosen. RCS, SMS and Messenger are the owner's (2026-10-26): Google's
     // RCS blue and Messenger's bright blue had been too close to tell apart, so RCS went dark, Messenger lighter, and SMS between them; one value for
-    // both themes. Messenger's bright blue carries the dark ink, since white on it reads at only 3.3:1. Blue is drawn as
+    // both themes. Messenger's bright blue carries white at 3.3:1, as Messenger's own app does (LightInk). Blue is drawn as
     // Messages for Web draws RCS, linear-gradient(130deg, #0842a0 30%, #07347e 95%) (owner, 2026-10-26: the solid navy
     // had been picked off that gradient).
     public static IReadOnlyList<BubbleSwatch> Swatches { get; } =
@@ -176,12 +176,17 @@ public static class BubbleColours
         return (Math.Max(x, y) + 0.05) / (Math.Min(x, y) + 0.05);
     }
 
-    // Ink is whichever of the two themes' text reads better on this fill, never a fixed choice per family: a person can
-    // put a pale colour where a dark one was.
-    public static bool LightInk(Rgba fill) => Contrast(fill, White) >= Contrast(fill, DarkInk(fill));
+    // Ink is chosen by the fill, never fixed per family: a person can put a pale colour where a dark one was. White wherever
+    // it holds 3:1, as Messenger writes on its own blue (owner, 2026-10-26: the near-black that reads a little better there
+    // looked wrong; the phone does the same); otherwise whichever of the two themes' text reads better.
+    public const double WhiteInkContrast = 3;
+    public static bool LightInk(Rgba fill) => Contrast(fill, White) >= WhiteInkContrast || Contrast(fill, White) >= Contrast(fill, DarkInk(fill));
     public static Rgba DarkInk(Rgba fill) => CardTinting.Flatten(LightThemeText, fill.Opaque);
     public static Rgba Ink(Rgba fill) => LightInk(fill) ? White : DarkInk(fill);
     public static double InkContrast(Rgba fill) => Contrast(fill, Ink(fill));
+    // What a fill's text must reach: 4.5:1 in the dark ink, and white's own 3:1 where white is chosen.
+    public static double RequiredContrast(Rgba fill) => LightInk(fill) ? WhiteInkContrast : MinimumContrast;
+    public static bool Reads(Rgba fill) => InkContrast(fill) >= RequiredContrast(fill);
 
     public static Rgba Glyph(Rgba fill) =>
         LightInk(fill) ? White : Contrast(fill, Navy) >= MinimumContrast ? Navy : DarkInk(fill);
@@ -190,7 +195,8 @@ public static class BubbleColours
     // own colour shows against the bubble and carries white text, which is how Windows draws selected text. On a pale
     // bubble it stops at a middle tone, where the dark ink also stays legible in case the text keeps its own colour. On a bubble already dark (the
     // owner's navy RCS) the first shade dark enough for white text was too near the bubble to see, so it goes on darkening until it shows. A
-    // bright one carrying the dark ink (the owner's Messenger blue) was darkened past where that ink reads, so shades lighter than 40% are tried after.
+    // bright one carrying the dark ink (the owner's Messenger blue, before it took white) was darkened past where that ink reads, so shades lighter
+    // than 40% are tried after.
     public static Rgba SelectionHighlight(Rgba fill)
     {
         var dark = !LightInk(fill);
@@ -267,19 +273,19 @@ public static class BubbleColours
         return new(Channel(r + m), Channel(g + m), Channel(b + m));
     }
 
-    // A custom colour whose text cannot reach 4.5:1 either way is moved, darker or lighter, by the smallest step that
-    // gets there. Only a narrow band of middle tones needs it, and the move is small enough to keep the colour's
-    // character.
+    // A custom colour whose text cannot reach what its ink needs (RequiredContrast) is moved, darker or lighter, by the
+    // smallest step that gets there. Only a narrow band of middle tones needs it, and the move is small enough to keep the
+    // colour's character.
     public static (Rgba Colour, bool Adjusted) Readable(Rgba colour)
     {
         colour = colour.Opaque;
-        if (InkContrast(colour) >= MinimumContrast) return (colour, false);
+        if (Reads(colour)) return (colour, false);
         for (var step = 1; step <= 50; step++)
         {
             var darker = CardTinting.Mix(Black, colour, step * 0.02);
-            if (InkContrast(darker) >= MinimumContrast) return (darker, true);
+            if (Reads(darker)) return (darker, true);
             var lighter = CardTinting.Mix(White, colour, step * 0.02);
-            if (InkContrast(lighter) >= MinimumContrast) return (lighter, true);
+            if (Reads(lighter)) return (lighter, true);
         }
         return (Black, true);
     }

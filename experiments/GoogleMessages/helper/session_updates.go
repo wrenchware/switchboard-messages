@@ -16,12 +16,11 @@ func (a *adapter) publishSession() {
 	}
 }
 
-// The session as the app saves it, encoded under the cookie lock. The library writes the cookie map from every answer it
-// reads, and snapshot, pair.finish and reauthenticate used to hand back the live session, which was encoded later with no
-// lock: meeting a write there stops the helper with a concurrent map access. The JSON is the same either way.
+// The session as the app saves it, encoded now rather than handed back live. The library writes the cookie map from
+// every answer it reads, and snapshot, pair.finish and reauthenticate used to hand back the live session, which was
+// encoded later with no lock: meeting a write there stops the helper with a concurrent map access. AuthData.MarshalJSON
+// takes the cookie lock itself, so it must not be held here: a second read lock waits behind a queued writer.
 func sessionJSON(auth *libgm.AuthData) (json.RawMessage, error) {
-	auth.CookiesLock.RLock()
-	defer auth.CookiesLock.RUnlock()
 	return json.Marshal(auth)
 }
 

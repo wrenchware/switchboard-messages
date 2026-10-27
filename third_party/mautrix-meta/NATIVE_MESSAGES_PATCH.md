@@ -22,6 +22,24 @@ Local changes are limited to `pkg/messagix/syncManager.go`, `pkg/messagix/client
 - Thread-range getters and state dumps return owned snapshots. Received transaction cursors do not alias table fields.
 - Synthetic regressions cover snapshot ownership and overlapping cursor/range updates, readers and JSON state snapshots.
 
+Upstream fixes taken since, without moving the pin (upstream's later `go.mod` moves mautrix, util and whatsmeow and adds
+the encrypted-history dependencies), each applied as upstream wrote it to the library packages only:
+
+- `cad8fd4` (#411) the typing stream reconnects when it closes;
+- `51050ce` (#420) native DGW streams take the current HTTP client instead of one that may be dead;
+- `04ee2cd` (#418) DGW writes go through one write loop, one-off streams wait 30 s for an answer, and a cancelled
+  request no longer closes the socket;
+- `d779029` (#421) a sync reset arriving on the live connection resyncs that database (`handleLiveSyncResets`). Here its
+  cursor is copied rather than pointing into the received table, as above;
+- `b0f22c4` (#437) Messenger media uploads use their own client with a 5-minute timeout instead of the 20 s answer
+  timeout. `graphql.go` was merged by hand, and `makeRequest` keeps the `SendOnce` check;
+- `eb0b769` (lightspeed part only) a malformed `STORE_ARRAY` step no longer ends the process with `os.Exit(1)`;
+- `da314fc` (instameow `graphql.go` part) the reload after "please reload page" is not cancelled with its request;
+- `f37e982` (useragent part) Messenger Android 584.1.0.61.98;
+- `cea2e38` (instameow part) `LoadIndex` returns `ErrMailboxMissing` instead of dereferencing a missing mailbox.
+
+When moving the pin these are already upstream and need no rebase.
+
 The helper build script runs these package tests through the helper's existing dependency graph. When moving the
 upstream pin, rebase these changes or remove the replacement only after verifying upstream supplies equivalent safety.
 

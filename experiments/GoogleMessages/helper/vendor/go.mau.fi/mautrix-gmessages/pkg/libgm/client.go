@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"sync"
@@ -40,18 +42,36 @@ type AuthData struct {
 	// Unknown encryption key, not used for anything
 	WebEncryptionKey []byte `json:"web_encryption_key,omitempty"`
 
-	SessionID uuid.UUID `json:"session_id,omitempty"`
-	DestRegID uuid.UUID `json:"dest_reg_id,omitempty"`
-	PairingID uuid.UUID `json:"pairing_id,omitempty"`
+	SessionID   uuid.UUID `json:"session_id,omitempty"`
+	DestRegID   uuid.UUID `json:"dest_reg_id,omitempty"`
+	DestPhoneID uint64    `json:"dest_phone_id,omitempty"`
+	PairingID   uuid.UUID `json:"pairing_id,omitempty"`
 
 	Cookies     map[string]string `json:"cookies,omitempty"`
 	CookiesLock sync.RWMutex      `json:"-"`
+}
+
+type marshalableAuthData AuthData
+
+func (ad *AuthData) MarshalJSON() ([]byte, error) {
+	ad.CookiesLock.RLock()
+	defer ad.CookiesLock.RUnlock()
+	return json.Marshal((*marshalableAuthData)(ad))
 }
 
 func (ad *AuthData) SetCookies(cookies map[string]string) {
 	ad.CookiesLock.Lock()
 	ad.Cookies = cookies
 	ad.CookiesLock.Unlock()
+}
+
+func (ad *AuthData) CopyForRepair() *AuthData {
+	newAD := NewAuthData()
+	ad.CookiesLock.RLock()
+	newAD.Cookies = maps.Clone(ad.Cookies)
+	ad.CookiesLock.RUnlock()
+	newAD.DestPhoneID = ad.DestPhoneID
+	return newAD
 }
 
 func (ad *AuthData) ClearPairing() {
@@ -130,7 +150,7 @@ type Client struct {
 	evHandler      EventHandler
 	sessionHandler *SessionHandler
 
-	longPollingConn io.Closer
+	longPollingConn atomic.Pointer[io.ReadCloser]
 	listenID        int
 	skipCount       int
 	disconnecting   bool
@@ -366,7 +386,7 @@ func (c *Client) Disconnect() {
 
 func (c *Client) IsConnected() bool {
 	// TODO add better check (longPollingConn is set to nil while the polling reconnects)
-	return c != nil && c.longPollingConn != nil
+	return c != nil && c.longPollingConn.Load() != nil
 }
 
 func (c *Client) IsLoggedIn() bool {

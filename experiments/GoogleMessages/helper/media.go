@@ -134,13 +134,13 @@ func (a *adapter) mediaRead(ctx context.Context, r request) (any, string) {
 	client := a.client
 	return a.downloadReadWait(ctx, mediaReadWait, cacheID, p.Offset, false, mediaDeclared(c, p.Thumbnail), func() ([]byte, error) {
 		if p.Thumbnail && c.GetThumbnailMediaID() != "" {
-			return readMedia(client.DownloadMedia(c.GetThumbnailMediaID(), c.GetThumbnailDecryptionKey()))
+			return readMedia(client.DownloadMedia(context.Background(), c.GetThumbnailMediaID(), c.GetThumbnailDecryptionKey()))
 		}
 		if p.Thumbnail {
 			return nil, errors.New("thumbnail unavailable")
 		}
 		if c.GetMediaID() != "" {
-			return readMedia(client.DownloadMedia(c.GetMediaID(), c.GetDecryptionKey()))
+			return readMedia(client.DownloadMedia(context.Background(), c.GetMediaID(), c.GetDecryptionKey()))
 		}
 		// Only a preview so far: ask the phone for the full image (upstream requestFullMedia). Its message
 		// update carries the media ID, which gives the attachment a new identity and reloads it in the app.
@@ -150,7 +150,7 @@ func (a *adapter) mediaRead(ctx context.Context, r request) (any, string) {
 			cancel()
 		}
 		if c.GetThumbnailMediaID() != "" {
-			return readMedia(client.DownloadMedia(c.GetThumbnailMediaID(), c.GetThumbnailDecryptionKey()))
+			return readMedia(client.DownloadMedia(context.Background(), c.GetThumbnailMediaID(), c.GetThumbnailDecryptionKey()))
 		}
 		if len(c.GetMediaData()) > 0 {
 			return c.GetMediaData(), nil

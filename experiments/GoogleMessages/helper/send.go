@@ -95,7 +95,7 @@ func (a *adapter) sendCall(ctx context.Context, r request) (any, string) {
 		if len(data) == 0 || len(data) > mediaLimit || !permittedUpload(p.Mime) || len(p.Text) > 65536 || p.Name == "" {
 			return answer(map[string]any{"outcome": "rejected"})
 		}
-		media, err := a.client.UploadMedia(data, p.Name, p.Mime)
+		media, err := a.client.UploadMedia(context.Background(), data, p.Name, p.Mime)
 		if err != nil {
 			return answer(map[string]any{"outcome": "rejected"})
 		}

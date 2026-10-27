@@ -5,6 +5,14 @@ This is `pkg/libgm` of `go.mau.fi/mautrix-gmessages v0.2609.1-0.20261010212621-1
 The bridge's `pkg/connector` is left out because the helper does not import it. No dependency version is upgraded. The
 helper's `go.mod` replaces the module with this directory so fresh clones build the same patched source.
 
+Since then `pkg/libgm` carries every upstream change to it up to `d49e4d7` (2026-10-26), taken without moving the pin,
+because upstream's later `go.mod` also moves `maunium.net/go/mautrix` to 0.32 and `go.mau.fi/util` to 0.11: the long
+poll's stored connection held in an atomic pointer and read with a 32 KiB buffer, the cookies locked while `AuthData` is
+marshalled, a context on media upload and download, `HTTPError` for media answers, location messages in the protocol,
+and the re-pair changes (`DestPhoneID`, `HasOtherGaiaPhone`, `CopyForRepair`). The helper pairs from a fresh `AuthData`
+every time, so the re-pair filter never applies to it. When moving the pin, compare `pkg/libgm` with upstream at that
+commit and only the local changes below should remain.
+
 Local changes:
 
 - The added `pkg/libgm/contacts_page.go`: `ListContactsPage`, which sends `LIST_CONTACTS` with the request's three

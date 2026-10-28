@@ -125,9 +125,12 @@ internal sealed class InstagramIdentity(string accountKey)
     public ChatSummary Map(InstagramChat chat)
     {
         var at = DateTimeOffset.FromUnixTimeMilliseconds(chat.At);
+        // Who wrote the newest message and which side it is on, from the newest message itself when the helper sends it: without them the phone drew
+        // the owner's own last message as a received one, which moved across when the conversation's messages came (swap audit, 2026-10-27).
+        var last = chat.Last is { Id.Length: > 0 } newest ? newest : null;
         var preview = string.IsNullOrWhiteSpace(chat.Preview) ? null
-            : new ChatMessage(Chat(chat.Id) + ":preview", Chat(chat.Id), "", null, at, "", chat.Preview, "text",
-                false, false, false, null, null, [], [], new(null, null, null, null, new Dictionary<string, bool?>()));
+            : new ChatMessage(Chat(chat.Id) + ":preview", Chat(chat.Id), last is null ? "" : Person(last.Sender), last?.Name, at, "", chat.Preview, "text",
+                last?.Outgoing ?? false, false, false, null, null, [], [], new(null, null, null, null, new Dictionary<string, bool?>()));
         return new(Chat(chat.Id), Account, chat.Title, Network, chat.Group ? "group" : "single", at,
             chat.Unread ? 1 : 0, chat.Muted, chat.Pinned, false, chat.ReadOnly,
             // An id the helper issued, not an Instagram address: the helper fetches the picture with the session's

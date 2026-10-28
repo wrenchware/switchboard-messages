@@ -81,7 +81,12 @@ internal static class GoogleModels
         // A group's line names who wrote it, as Google does beside its words: the phone's list put the name there only once the conversation's
         // messages were read, and the line changed each time the phone read them or let them go (owner, 2026-10-27).
         var sender = c.Group && !c.PreviewOutgoing && !string.IsNullOrWhiteSpace(c.PreviewSender) ? c.PreviewSender : null;
-        var preview = string.IsNullOrWhiteSpace(c.Preview) ? null : new ChatMessage(Qualify("preview:" + c.Id), Qualify(c.Id), "", sender, c.At, "", c.Preview, "text", c.PreviewOutgoing, false, false, null, null, [], [], new(null,null,null,null,new Dictionary<string,bool?>()));
+        // The writer as the conversation's own messages name them, and the way the conversation travels, so the phone draws the newest message from
+        // the line as it draws it once read: a group's line stood for a coloured initial, and the owner's own line for a bubble in the "unknown" blue,
+        // until the messages came and each changed (swap audit, 2026-10-27). Google gives the writer by name only: one person by that name, or none.
+        var writer = sender is null ? null : PreviewWriter(c, sender);
+        var preview = string.IsNullOrWhiteSpace(c.Preview) ? null : new ChatMessage(Qualify("preview:" + c.Id), Qualify(c.Id), writer?.Id ?? "", writer?.Name ?? sender, c.At, "", c.Preview, "text", c.PreviewOutgoing, false, false, null, null, [], [], new(null,null,null,null,new Dictionary<string,bool?>()),
+            c.Transport is "RCS" or "SMS" ? c.Transport : null);
         // An RCS conversation has read receipts. Anything else is unknown rather than absent: SMS reports no reading, but
         // a conversation can move between the two and its messages say which they travelled on.
         return new(Qualify(c.Id), Account, c.Title, "Google Messages", c.Group ? "group" : "single", c.At, c.Unread && !c.PreviewOutgoing ? 1 : 0, false, false, c.Archived,
@@ -91,6 +96,12 @@ internal static class GoogleModels
                 // A saved contact as GoogleIncomingCards reads one; a short code or a named sender never counts as one.
                 IsContact: !p.Self && GoogleIncomingCards.SavedContact(p) && GoogleIncomingCards.IsPersonNumber(p.Id))).ToArray(),c.Participants.Length,c.ExpectedTransport,c.AvatarColor,
             IsEncrypted: SendsAsText(c) ? false : null);
+    }
+    // The one participant (not this account) a line's writer name belongs to, by full or first name; none when the name is shared or unknown.
+    private static GooglePerson? PreviewWriter(GoogleChat c, string name)
+    {
+        var named = c.Participants.Where(p => !p.Self && (string.Equals(p.Name, name, StringComparison.Ordinal) || string.Equals(p.First, name, StringComparison.Ordinal))).Take(2).ToArray();
+        return named.Length == 1 ? named[0] : null;
     }
     // A conversation Google keeps as SMS, or one set to send by SMS or MMS, is not encrypting what it sends now, whatever
     // an older switch line says. That much is known, so it is said; anything else is left to the switch lines.

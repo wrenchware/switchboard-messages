@@ -118,9 +118,12 @@ internal static class GoogleModels
         var sent = m.Status is "OUTGOING_COMPLETE" or "OUTGOING_DELIVERED" or "OUTGOING_DISPLAYED" ? "SUCCESS"
             : m.Status.StartsWith("OUTGOING_FAILED", StringComparison.Ordinal) ? "FAIL_PERMANENT"
             : outgoing ? "PENDING" : null;
-        // Upstream reads delivered as a receipt only in a direct conversation. What it means in a group (one member, or
-        // all of them) is not established, so a group message says Sent until somebody reads it.
-        var delivered = !c.Group && m.Status is "OUTGOING_DELIVERED" or "OUTGOING_DISPLAYED" ? (int?)1 : null;
+        // A group's delivered is the phone's own word for it: Google Messages on the phone says Delivered for this status
+        // in an RCS group (owner, 2026-10-28), where this said Sent. Google gives no count, and the status turned
+        // Delivered at the first member's update (a second followed under a second later in a group of two others,
+        // 2026-10-27), so it is counted as one, the most it is known to say. Upstream skips it in groups for Matrix's
+        // sake, not Google's.
+        var delivered = m.Status is "OUTGOING_DELIVERED" or "OUTGOING_DISPLAYED" ? (int?)1 : null;
         // A recording is named as one. Google sends an audio message with an audio media type like any other
         // attachment, and everything that was not a picture or a clip was being called a file — so it drew as a card
         // with a filename on it rather than as something that plays. The player the voicemails use takes any

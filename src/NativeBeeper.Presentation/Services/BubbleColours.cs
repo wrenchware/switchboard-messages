@@ -13,13 +13,13 @@ public enum BubbleReason { GoogleRoute, Service, LinkedNeutral, UnknownService }
 public readonly record struct BubbleResolution(BubbleFamily Family, BubbleReason Reason);
 
 // A named colour with a variant for each theme. Both variants carry readable text; the checks hold every swatch to it.
-public sealed record BubbleSwatch(string Id, string Name, Rgba Light, Rgba Dark, BubbleGradient? Gradient = null)
+public sealed record BubbleSwatch(string Id, string Name, Rgba Light, Rgba Dark)
 {
     public Rgba For(bool dark) => dark ? Dark : Light;
 }
 
-// A CSS linear gradient a bubble is painted with in place of its solid colour, which still decides its ink and colours
-// the send button, dots and tags. Stops are fractions of the gradient line.
+// A CSS linear gradient a bubble is painted with in place of its solid colour (BubbleColours.Fade), which still decides
+// its ink and colours the send button, dots and tags. Stops are fractions of the gradient line.
 public sealed record BubbleGradient(Rgba From, double FromStop, Rgba To, double ToStop, double Degrees)
 {
     // Where the line runs on a width by height box, as a browser draws it: through the centre at the CSS angle (0 points
@@ -46,19 +46,20 @@ public static class BubbleColours
     // The families a person can colour. Neutral is left out, so recolouring Google's unknown route never recolours it.
     public static IReadOnlyList<BubbleFamily> Families { get; } = [.. Enum.GetValues<BubbleFamily>().Where(family => family != BubbleFamily.Neutral)];
 
-    // The unknown route keeps the exact values it had before colours could be chosen. RCS, SMS and Messenger are the owner's (2026-10-26): Google's
-    // RCS blue and Messenger's bright blue had been too close to tell apart, so RCS went dark, Messenger lighter, and SMS between them; one value for
-    // both themes. Messenger's bright blue carries white at 3.3:1, as Messenger's own app does (LightInk). Blue is drawn as
-    // Messages for Web draws RCS, linear-gradient(130deg, #0842a0 30%, #07347e 95%) (owner, 2026-10-26: the solid navy
-    // had been picked off that gradient).
+    // The defaults are the owner's (2026-10-29). In dark the RCS navy stays, and SMS, Messenger, Instagram and Voice went
+    // a step deeper so none glows on the dark thread, every one carrying white; the order from darkest to brightest (RCS,
+    // Messenger, SMS) stayed, so each still says which service it is. In light the bubbles went between the old strong
+    // colours and pale tints: RCS a medium blue under white, the rest tints under the dark ink, the blues set apart by
+    // lightness and hue (RCS the darkest, Messenger sky, SMS the palest periwinkle), since the pale tints alone were too
+    // close to tell apart. Teal to lavender are offered only.
     public static IReadOnlyList<BubbleSwatch> Swatches { get; } =
     [
-        new("blue", "Blue", new(0x07, 0x35, 0x80), new(0x07, 0x35, 0x80), new(new(0x08, 0x42, 0xA0), .30, new(0x07, 0x34, 0x7E), .95, 130)),
-        new("light-blue", "Light blue", new(0x7C, 0xAC, 0xF8), new(0x7C, 0xAC, 0xF8)),
-        new("muted-blue", "Muted blue", new(0xC6, 0xD9, 0xF4), new(0x25, 0x42, 0x6E)),
-        new("bright-blue", "Bright blue", new(0x0E, 0x92, 0xEB), new(0x0E, 0x92, 0xEB)),
-        new("purple", "Purple", new(0x83, 0x3A, 0xB4), new(0x8E, 0x44, 0xC4)),
-        new("green", "Green", new(0x18, 0x80, 0x38), new(0x13, 0x73, 0x33)),
+        new("blue", "Blue", new(0x2C, 0x5B, 0xB0), new(0x07, 0x35, 0x80)),
+        new("light-blue", "Light blue", new(0xC4, 0xD4, 0xF7), new(0x5A, 0x86, 0xCC)),
+        new("muted-blue", "Muted blue", new(0xDD, 0xE2, 0xEA), new(0x25, 0x42, 0x6E)),
+        new("bright-blue", "Sky blue", new(0x7C, 0xCB, 0xF7), new(0x0A, 0x72, 0xB8)),
+        new("purple", "Purple", new(0xD3, 0xB3, 0xEE), new(0x7A, 0x36, 0xAD)),
+        new("green", "Green", new(0xA8, 0xDD, 0xB5), new(0x10, 0x6A, 0x2F)),
         new("teal", "Teal", new(0x00, 0x79, 0x6B), new(0x00, 0x69, 0x5C)),
         new("red", "Red", new(0xC5, 0x22, 0x1F), new(0xB3, 0x26, 0x1E)),
         new("pink", "Pink", new(0xC2, 0x18, 0x5B), new(0xAD, 0x14, 0x57)),
@@ -119,12 +120,23 @@ public static class BubbleColours
         return (Swatch(choice) ?? Swatch(DefaultSwatch(family))!).For(dark);
     }
 
-    // The gradient a bubble of this family is painted with, when its colour is a swatch that has one. A custom colour and
-    // the neutral bubble are always flat.
-    public static BubbleGradient? Gradient(BubbleFamily family, string? choice)
+    // The gradient a bubble of this family is painted with: its fill fading darker (Fade).
+    public static BubbleGradient Gradient(BubbleFamily family, string? choice, bool dark) => Fade(Fill(family, choice, dark), dark);
+
+    // Every sent bubble fades from its own colour to a darker one toward the bottom right, as Messages for Web draws RCS
+    // (linear-gradient at 130deg, 30% to 95%), but only ever darker: Web's RCS began lighter than its navy, and beside the
+    // flat colour read as the lighter of the two (owner, 2026-10-29). About a twentieth darker in dark and a thirtieth in
+    // light, so it can barely be told: the owner saw a fifth, then a tenth, as too much. A pale bubble darkened as far as a
+    // dark one turns muddy. A fill under the dark ink fades only as far as that ink still reads.
+    public static BubbleGradient Fade(Rgba fill, bool dark)
     {
-        if (family == BubbleFamily.Neutral || TryParseCustom(choice, out _)) return null;
-        return (Swatch(choice) ?? Swatch(DefaultSwatch(family))!).Gradient;
+        fill = fill.Opaque;
+        var ink = Ink(fill);
+        var amount = dark ? .05 : .03;
+        var to = CardTinting.Mix(Black, fill, amount);
+        while (!LightInk(fill) && amount > 0 && Contrast(to, ink) < RequiredContrast(fill))
+            to = CardTinting.Mix(Black, fill, amount = Math.Max(0, amount - .01));
+        return new(fill, .30, to, .95, 130);
     }
 
     // What is worth saving: nothing for the default, so a later change of default reaches people who never chose.

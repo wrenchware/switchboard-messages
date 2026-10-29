@@ -547,7 +547,7 @@ public sealed partial class ConversationViewModel(IChatReader reader, Conversati
         // service shown on its own (SourceFilter) leaves every other member's rows out, system lines included.
         var shown = ShownChatIds();
         var visible = ReceiptRules.DeriveReadMarks(DrawnMessages(current).Where(m => !m.IsHidden && (shown is null || shown.Contains(m.ChatId)))
-            .Select(WithPendingReaction).ToArray());
+            .Select(WithPendingChange).OfType<ChatMessage>().Select(WithPendingReaction).ToArray());
         var lookups = visible.GroupBy(m => m.ChatId).ToDictionary(g => g.Key, g => (IReadOnlyDictionary<string, ChatMessage>)g.ToDictionary(m => m.Id));
         // Reactions, receipts and edits must not be treated as newly arriving messages.
         IsContentOnlyUpdate = IsLiveRender && Messages.Select(m => MessageIdentity.Key(m.Message)).SequenceEqual(visible.Select(MessageIdentity.Key));

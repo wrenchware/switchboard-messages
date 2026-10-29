@@ -86,10 +86,16 @@ namespace NativeBeeper.Protocol;
 /// instead of the token, and the device asks for its token with <c>pair.joinFinish</c> (<see cref="NetworkPairing.JoinFinishMethod"/>) once its person typed a code that
 /// gives the proof (<see cref="JoinMatch.FinishProof"/>); the device is added only then. Additive for the server: a join connection of 21 is answered as before. Not for
 /// the device: a device of 22 asks only a server of 22, since anything answering at the address could otherwise say it is older and skip the proof.</para>
+/// <para>24 (SWITCHBOARD.md stage 8) adds the server's whole copy of every conversation: <c>history.sync</c>, <c>history.older</c> and <c>history.changes</c>, and the
+/// <c>history</c> event, which carries the changed messages themselves. Additive: a client below 24 never calls them and is never sent the event (its place in the sequence
+/// counts as sent), and a host answers them as not supported to a connection that negotiated less. What every version gains is that the server answers its existing reads
+/// (<c>messages.page</c>, <c>history.held</c>, <c>messages.resolve</c>, the peeks) from the same copy where it holds the conversation, with page cursors of its own.</para>
 /// </remarks>
 public static class ProtocolVersion
 {
-    public const int Current = 23;
+    public const int Current = 24;
+    /// <summary>The first version with the server's whole history (<see cref="ProtocolMethods.HistorySync"/> and the <c>history</c> event).</summary>
+    public const int WholeHistory = 24;
     /// <summary>23 adds chats.sync and persistent list revisions. Older clients keep chats.list; newer clients of older hosts do too. No existing wire changes.</summary>
     public const int ConversationSync = 23;
     /// <summary>The first version whose join connections prove the owner's approval with a finish code (<see cref="NetworkPairing.JoinFinishMethod"/>).</summary>

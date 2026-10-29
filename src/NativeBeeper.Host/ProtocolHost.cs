@@ -49,6 +49,8 @@ namespace NativeBeeper.Host;
 /// whichever device opens one (stage 6 slice 8, <see cref="HostSavedPhotos"/>). Null (the app's in-process host, whose window keeps its own) keeps none.</param>
 /// <param name="Logs">Given (the Linux server), the host gives its own logs, by a name from a fixed list, to its owner device (<c>host.logs</c>, protocol 18). Null serves none.</param>
 /// <param name="Admin">Given (the Linux server), the host serves its owner device its status, its accounts and their removal (<c>host.status</c>, <c>host.accounts</c>, <c>host.removeAccount</c>, protocol 20). Null serves none.</param>
+/// <param name="WholeHistory">Given (the two servers), the host keeps every conversation whole in this store (<see cref="ConversationHistory"/>, SWITCHBOARD.md stage 8), answers its
+/// clients' history reads from it and serves <c>history.*</c> (protocol 24). Null (the app's in-process host and the loopback) keeps none and reads the services as before.</param>
 internal sealed record ProtocolHostOptions(
     MessagingRouter Messaging, DirectoryRouter Directory, MediaRouter Media, TypingRouter Typing,
     GoogleMessagesBackend Google, GoogleMediaBackend GoogleMedia, MessengerBackend Messenger, InstagramBackend Instagram, GoogleVoiceAccounts VoiceAccounts,
@@ -57,7 +59,8 @@ internal sealed record ProtocolHostOptions(
     HostClientState? ClientState = null, string? UploadFolder = null, RestoreOnce? Restores = null, HostUnavailablePorts? Unavailable = null,
     SharedStateStore? SharedState = null, HostUnarchive? IncomingUnarchive = null, SavedPhotos? SavedPhotos = null, HostScheduled? Scheduled = null,
     IRemoteSignInHost? RemoteSignIn = null, IQrPairingHost? QrPairing = null, Func<bool>? BrowserOutOfDate = null, IRemoteSignInHost? VoiceRemoteSignIn = null,
-    IAccountMove? AccountMove = null, IAccountGate? AccountGate = null, IHostLogs? Logs = null, IServerAdmin? Admin = null, IPrivateStateStore? ConversationSyncStore = null);
+    IAccountMove? AccountMove = null, IAccountGate? AccountGate = null, IHostLogs? Logs = null, IServerAdmin? Admin = null, IPrivateStateStore? ConversationSyncStore = null,
+    NativeBeeper.Storage.HistoryDatabase? WholeHistory = null);
 
 /// <summary>
 /// The ports a host serves in place of the providers it does not run (the Linux server: Google Messages, Google Voice and Instagram, SWITCHBOARD.md
@@ -89,13 +92,15 @@ internal sealed class ProtocolHost : IDisposable
     private readonly HostScheduledSends? scheduled;
 
     private ProtocolHost(ProtocolServices services, string version, EventLog eventLog, StatePublisher statePublisher, OperationJournal journal, UploadStore uploads, TypingHub typingHub,
-        BackendCaughtUp caughtUp, IHostIdentity? identity, HostScheduledSends? scheduled, HostSavedPhotos? savedPhotos)
+        BackendCaughtUp caughtUp, IHostIdentity? identity, HostScheduledSends? scheduled, HostSavedPhotos? savedPhotos, ConversationHistory? history)
     {
         Services = services; Version = version; EventLog = eventLog; StatePublisher = statePublisher; Journal = journal; this.uploads = uploads; this.typingHub = typingHub; this.caughtUp = caughtUp;
-        this.identity = identity; this.scheduled = scheduled; this.savedPhotos = savedPhotos;
+        this.identity = identity; this.scheduled = scheduled; this.savedPhotos = savedPhotos; this.history = history;
     }
 
     private readonly HostSavedPhotos? savedPhotos;
+
+    private readonly ConversationHistory? history;
 
     /// <summary>
     /// Reads the identity again now and puts it in the state before this returns, for a client in this process whose window just saw a sign-in
@@ -144,6 +149,12 @@ internal sealed class ProtocolHost : IDisposable
         var roster = new ConnectionRoster();
         // A server runs the incoming unarchive in the log's source, so it sees every provider event once however many clients read the log (slice 9).
         var source = options.ProviderFeed;
+        // A server's whole history sees each event first, nearest the providers: the messages it names are in the copy before anything else reads them (stage 8).
+        var history = options.WholeHistory is { } historyStore
+            ? new ConversationHistory(historyStore, messaging, messaging, messaging, messaging, messaging, messaging, log,
+                chatId => !chatId.StartsWith("instagram:", StringComparison.Ordinal) || options.Instagram.TryTakeHistoryRead(DateTimeOffset.UtcNow))
+            : null;
+        if (history is not null) source = history.Over(source);
         // The identity the host serves, made below: the key its shared rows are filed under, which the incoming unarchive reads the merges by.
         IHostIdentity? served = null;
         // Whether this host returns the one-to-one conversations too, put in its state (HostLimits.UnarchivesChats) for its clients to split by.
@@ -163,7 +174,10 @@ internal sealed class ProtocolHost : IDisposable
             source = HostIncomingUnarchive.Over(source, messaging, messaging, journal, roster, unarchive, log);
             log("incoming unarchive via=host");
         }
-        var eventLog = new EventLog(source, log: log) { BeforeSourceEvent = change => publisher?.Watch(change) };
+        // With a whole history each message event has its history change beside it: twice the ring, so a phone that resumes reaches back as far as before.
+        var eventLog = new EventLog(source, history is null ? EventLog.DefaultCapacity : EventLog.DefaultCapacity * 2,
+            history is null ? EventLog.DefaultSubscriberQueue : EventLog.DefaultSubscriberQueue * 2, log: log) { BeforeSourceEvent = change => publisher?.Watch(change) };
+        history?.Attach(eventLog);
         // Not told of every sign-in the way the window's own port is, so it follows the files the key is read from itself.
         IHostIdentity? identity = options.HostTokens is { } tokens ? HostIdentityPort.Over(tokens, options.Messenger, options.Instagram, options.VoiceAccounts, followsFiles: true) : null;
         // A server's shared state is filed under its space key (Server\space.protected), pinned at the first write, and that key is what the host serves as
@@ -206,9 +220,12 @@ internal sealed class ProtocolHost : IDisposable
         var typingHub = new TypingHub(options.Typing, log);
         // Made below, once the services exist; a sign-out tells it which account went (slice 8).
         HostSavedPhotos? savedPhotos = null;
-        var services = new ProtocolServices(Backend: unavailable?.Backend ?? google, Chats: messaging, ConversationSync: new ConversationSync(messaging, options.ConversationSyncStore, log), Sender: messaging, Peek: messaging, Actions: messaging, History: messaging,
+        // With a whole history, the reads it can answer (pages, held messages, resolves, peeks, windows) and the changes it reads back go through it.
+        var services = new ProtocolServices(Backend: unavailable?.Backend ?? google, Chats: history is null ? messaging : history,
+            ConversationSync: new ConversationSync(messaging, options.ConversationSyncStore, log), Sender: history is null ? messaging : history,
+            Peek: history is null ? messaging : history, Actions: history is null ? messaging : history, History: history is null ? messaging : history, WholeHistory: history,
             Contacts: directory, FrequentContacts: directory, Groups: directory, Search: google, ReadState: new PrivateReadingHostReadState(messaging), Settings: messaging,
-            Attachments: media, Snoozes: options.Snoozes, Mutations: messaging, Deletion: messaging, GroupManagement: directory, FirstMessage: directory,
+            Attachments: media, Snoozes: options.Snoozes, Mutations: history is null ? messaging : history, Deletion: messaging, GroupManagement: directory, FirstMessage: directory,
             Events: eventLog, Media: media, AttachmentBatches: media, Uploads: uploads,
             // The account move's gate stands in front of the two ports a PC's accounts move through: nothing signs them in while they are staged or have moved away.
             MessengerAccount: options.AccountGate is { } gate ? new GatedMessengerAccount(messengerAccount, gate) : messengerAccount,
@@ -218,7 +235,11 @@ internal sealed class ProtocolHost : IDisposable
             HelperRestarts: GateRestarts(unavailable?.HelperRestarts ?? new HostHelperRestarter(google, options.Keeper, options.Messenger, options.Instagram, options.VoiceAccounts, log), options.AccountGate), KeptHistory: options.KeptHistory,
             MediaPreparer: media, IncomingCards: options.IncomingCards, ClientState: options.ClientState, Restores: options.Restores,
             GoogleSignedIn: options.Keeper.SignedIn, AccountMove: options.AccountMove, Logs: options.Logs, Admin: options.Admin, SharedState: options.SharedState, Connections: roster, Scheduled: scheduled, RemoteSignIn: options.RemoteSignIn, QrPairing: options.QrPairing, VoiceRemoteSignIn: options.VoiceRemoteSignIn,
-            AccountEnded: (account, key) => savedPhotos?.Ended(account, key),
+            AccountEnded: (account, key) =>
+            {
+                savedPhotos?.Ended(account, key);
+                history?.Ended(account, key);
+            },
             // A PC's choices taken into the shared state once (slice 13): only a server with a shared state and an identity, and a key it adopts is put in its state.
             Imports: options.SharedState is { } importing && identity is not null
                 ? new HostStateImport(importing, uploads, () => Task.Run(() => statePublisher.Refresh()), log) : null);
@@ -236,7 +257,14 @@ internal sealed class ProtocolHost : IDisposable
         // the rest wait for their time. A start that fails is tried again (HostScheduledSends.StartWithRetryAsync); nothing is sent by a schedule that has not loaded.
         if (scheduled is not null) _ = scheduled.StartWithRetryAsync();
 
-        return new ProtocolHost(services, options.Version, eventLog, statePublisher, journal, uploads, typingHub, caughtUp, identity, scheduled, savedPhotos);
+        // The whole history is kept whether or not a client is connected: its store opens, and the providers' feed runs from now on.
+        if (history is not null)
+        {
+            history.Start();
+            eventLog.Start();
+        }
+
+        return new ProtocolHost(services, options.Version, eventLog, statePublisher, journal, uploads, typingHub, caughtUp, identity, scheduled, savedPhotos, history);
     }
 
     /// <summary>Stops publishing state. A transport calls it before it closes its clients, and <see cref="Dispose"/> repeats it harmlessly.</summary>
@@ -251,6 +279,7 @@ internal sealed class ProtocolHost : IDisposable
         StatePublisher.Dispose();
         typingHub.Dispose();
         EventLog.Dispose();
+        history?.Dispose();
         uploads.Dispose();
         Journal.Dispose();
     }

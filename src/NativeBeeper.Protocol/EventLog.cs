@@ -6,11 +6,12 @@ namespace NativeBeeper.Protocol;
 /// One item of a feed: a realtime event with its position, a host state (<see cref="State"/>, SWITCHBOARD.md 2.6b), an account
 /// <see cref="Signal"/> (2.6c), a provider's <see cref="CaughtUp"/> (3.0b), or (all null) a resync, which says that anything may have changed and the reader should read it all
 /// again. A resync's <see cref="Seq"/> is the position after which events continue. A <see cref="Shared"/> item is one commit to the host's shared state (stage 6).
+/// A <see cref="History"/> item is one change to the server's whole copy of a conversation (stage 8).
 /// </summary>
 public sealed record EventItem(long Seq, RealtimeEvent? Event, HostState? State = null, AccountSignal? Signal = null, CaughtUpNotice? CaughtUp = null,
-    SharedChange? Shared = null)
+    SharedChange? Shared = null, HistoryChange? History = null)
 {
-    public bool IsResync => Event is null && State is null && Signal is null && CaughtUp is null && Shared is null;
+    public bool IsResync => Event is null && State is null && Signal is null && CaughtUp is null && Shared is null && History is null;
 }
 
 /// <summary>
@@ -124,6 +125,28 @@ public sealed class EventLog : IDisposable
     /// handed a resync reads what it missed with <c>state.sync</c>.
     /// </summary>
     public long AppendShared(SharedChange change) => Record(position => new EventItem(position, null, Shared: change), null);
+
+    /// <summary>
+    /// Records one change to the server's whole copy of a conversation (SWITCHBOARD.md stage 8) in the sequence, just after the realtime event that caused it, so a
+    /// reader that resumes is given it too. A reader that fell behind and was handed a resync reads what it missed with <c>history.changes</c>.
+    /// </summary>
+    public long AppendHistory(HistoryChange change) => Record(position => new EventItem(position, null, History: change), null);
+
+    /// <summary>
+    /// Starts running the source feed with no reader yet: a host that keeps something of its own from the events (the whole history) needs them whether or not
+    /// a client is connected. Does nothing once the feed runs.
+    /// </summary>
+    public void Start()
+    {
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            if (pump is not null) return;
+            stop = new CancellationTokenSource();
+            var token = stop.Token;
+            pump = Task.Run(() => PumpAsync(token), CancellationToken.None);
+        }
+    }
 
     private long Record(Func<long, EventItem> make, HostState? state)
     {

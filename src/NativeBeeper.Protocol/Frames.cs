@@ -119,6 +119,12 @@ public static class EventKinds
     /// slow client sees only the newest picture. A client that does not know the kind ignores it.
     /// </summary>
     public const string QrCode = "qrCode";
+    /// <summary>
+    /// One change to the server's whole copy of a conversation (<see cref="HistoryChange"/>, SWITCHBOARD.md stage 8; protocol version 24), carrying the changed
+    /// messages themselves. It sits in the host's sequence like any event, just after the realtime event that caused it, so a client that resumes is given the ones
+    /// it missed and one that was handed a resync reads them with <c>history.changes</c>. A connection below 24 is never sent one.
+    /// </summary>
+    public const string History = "history";
 }
 
 /// <summary>

@@ -9,6 +9,10 @@ public sealed partial class MessageActionsViewModel
 {
     private readonly HashSet<(string? Profile, string Chat, string Message, string Action)> uncertainChanges = [];
     private readonly Dictionary<(string? Profile, string Chat, string Message), string> editDrafts = [];
+    /// <summary>Raised as an edit (the new words) or a delete (whether for everyone) is handed to the service, so the conversation shows it at once.</summary>
+    public event Action<ChatMessage, string?, bool?>? ChangeSubmitting;
+    /// <summary>Raised when the service refused the change: the conversation shows the message as the service has it again.</summary>
+    public event Action<ChatMessage>? ChangeFailed;
     public bool IsDialogOpen { get; private set; }
     public bool HasEditDrafts => editDrafts.Count > 0;
     public void ClearState() { editDrafts.Clear(); uncertainChanges.Clear(); uncertainReactions.Clear(); pending.Clear(); Status = ""; }
@@ -28,6 +32,7 @@ public sealed partial class MessageActionsViewModel
         {
             if (profile != await NotificationIdentity.ProfileAsync(tokens)) { Status = "Connection changed. Reopen the message menu."; return MessageMutationOutcome.Rejected; }
             if (uncertainChanges.Count >= 128 || editDrafts.Count >= 128) { Status = "Review saved changes before editing more messages."; return MessageMutationOutcome.Rejected; }
+            ChangeSubmitting?.Invoke(message, text, everyone);
             if (text is not null)
             {
                 editDrafts[(profile, message.ChatId, message.Id)] = text;
@@ -40,13 +45,20 @@ public sealed partial class MessageActionsViewModel
             Status = "";
             return MessageMutationOutcome.Accepted;
         }
+        // An unknown outcome keeps what was shown until the service's copy says otherwise or the prediction times out.
         catch (SendException ex)
         {
             Status = ex.Message;
             if (ex.OutcomeUnknown) uncertainChanges.Add(operation);
+            else ChangeFailed?.Invoke(message);
             return ex.OutcomeUnknown ? MessageMutationOutcome.Unknown : MessageMutationOutcome.Rejected;
         }
-        catch (Exception) { Status = "Couldn't make this change. Your edited text is kept until you close Messages."; return MessageMutationOutcome.Rejected; }
+        catch (Exception)
+        {
+            ChangeFailed?.Invoke(message);
+            Status = "Couldn't make this change. Your edited text is kept until you close Messages.";
+            return MessageMutationOutcome.Rejected;
+        }
         finally { IsBusy = false; }
     }
 }

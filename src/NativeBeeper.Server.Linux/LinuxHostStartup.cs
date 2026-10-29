@@ -150,8 +150,12 @@ internal sealed partial class LinuxHostStartup : IDisposable
             Admin: admin,
             // The conversation list's revisions (protocol 23) in its own protected state.db, so a phone's sync after the nightly restart is a delta,
             // not the whole list again.
-            ConversationSyncStore: services.GetRequiredService<IPrivateStateStore>()));
+            ConversationSyncStore: services.GetRequiredService<IPrivateStateStore>(),
+            // Every conversation kept whole (SWITCHBOARD.md stage 8, protocol 24): history.db beside the other stores, sealed under the state key like them.
+            WholeHistory: new NativeBeeper.Storage.HistoryDatabase(Path.Combine(root, "history.db"), protector)));
         built = host;
+        // An account removed on the server's own page takes what the host kept of it, as a client's sign-out does (the whole history's copies).
+        admin.Ended = host.Services.AccountEnded;
         movedUploads = host.Services.Uploads;
         step.Took("host");
         // The Google sign-in keeper is never started without Google Messages: it renews through a browser this host then does not have. With it, the

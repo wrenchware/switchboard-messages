@@ -168,6 +168,7 @@ public static partial class ProtocolMethods
         .. HostLogsEntries(),
         .. AdminEntries(),
         .. PushEntries(),
+        .. WholeHistoryEntries(),
     ];
 
     public static IReadOnlyList<string> All { get; } = Catalog.Select(entry => entry.Name).ToArray();

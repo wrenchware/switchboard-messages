@@ -21,6 +21,7 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
     ProtocolCallStats? stats = null, Action<string>? log = null, OperationJournal? journal = null, MediaReadCache? mediaCache = null)
 {
     private ConversationSync? SyncService => services.ConversationSync;
+    private IWholeHistory? WholeHistoryService => services.WholeHistory;
 
     private delegate Task<byte[]> Run(ProtocolServices services, OperationJournal journal, RequestFrame request, CancellationToken cancellationToken);
 
@@ -185,7 +186,14 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
                     }
                     item = item with { Shared = visible };
                 }
+                // A change to the whole history goes only to a connection of 24 or later; below, its place counts as sent (stage 8).
+                if (item.History is not null && negotiated < ProtocolVersion.WholeHistory)
+                {
+                    sent.Advance(item.Seq);
+                    continue;
+                }
                 var frame = item.IsResync ? new EventFrame(item.Seq, subscription.Epoch, EventKinds.Resync)
+                    : item.History is { } history ? new EventFrame(item.Seq, subscription.Epoch, EventKinds.History, ProtocolJson.ToElement(history))
                     : item.State is { } state ? new EventFrame(item.Seq, subscription.Epoch, EventKinds.State, ProtocolJson.ToElement(ForConnection(state)))
                     : item.Signal is { } signal ? new EventFrame(item.Seq, subscription.Epoch, EventKinds.Account, ProtocolJson.ToElement(signal))
                     : item.CaughtUp is { } caughtUp ? new EventFrame(item.Seq, subscription.Epoch, EventKinds.CaughtUp, ProtocolJson.ToElement(caughtUp))
@@ -494,6 +502,16 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
             return JsonSerializer.SerializeToUtf8Bytes<TResult>(await call(target, parameters, cancellationToken).ConfigureAwait(false), ProtocolJson.Options);
         });
 
+    // The whole history's reads (stage 8): only to a connection of 24 or later, and only on a host that keeps one.
+    private static Route WholeHistoryRoute<TParams, TResult>(Func<IWholeHistory, TParams, CancellationToken, Task<TResult>> call) where TParams : class
+        => new(typeof(TParams), typeof(TResult), null, Own: async (connection, request, _, cancellationToken) =>
+        {
+            if (connection.negotiated < ProtocolVersion.WholeHistory) throw new NotSupportedException();
+            var port = connection.WholeHistoryService ?? throw new NotSupportedException();
+            if (!ParamsShape.HasRequiredValues(typeof(TParams), request.Params)) throw Invalid();
+            return JsonSerializer.SerializeToUtf8Bytes<TResult>(await call(port, ReadParams<TParams>(request), cancellationToken).ConfigureAwait(false), ProtocolJson.Options);
+        });
+
     private static Route Of<TPort, TResult>(Func<ProtocolServices, TPort?> port, Func<TPort, CancellationToken, Task<TResult>> call)
         where TPort : class
         => new(null, typeof(TResult), async (services, _, _, cancellationToken) =>
@@ -581,6 +599,9 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
             var sync = connection.SyncService ?? throw new NotSupportedException();
             return JsonSerializer.SerializeToUtf8Bytes(await sync.ReadAsync(ReadParams<ChatsSyncParams>(request), ct).ConfigureAwait(false), ProtocolJson.Options);
         }),
+        [ProtocolMethods.HistorySync] = WholeHistoryRoute<HistorySyncParams, HistorySyncResult>((port, p, ct) => port.SyncAsync(p, ct)),
+        [ProtocolMethods.HistoryOlder] = WholeHistoryRoute<HistoryOlderParams, HistoryOlderResult>((port, p, ct) => port.OlderAsync(p, ct)),
+        [ProtocolMethods.HistoryChanges] = WholeHistoryRoute<HistoryChangesParams, HistoryChangesResult>((port, p, ct) => port.ChangesAsync(p, ct)),
         [ProtocolMethods.ChatsGet] = Of<IChatReader, ChatIdParams, ChatSummary>(s => s.Chats, (port, p, ct) => port.GetChatAsync(p.ChatId, ct)),
         [ProtocolMethods.ChatsSettings] = Of<IChatSettingsBackend, ChatIdParams, ChatSettings>(s => s.Settings, (port, p, ct) => port.GetSettingsAsync(p.ChatId, ct)),
         [ProtocolMethods.ChatsSendPermission] = Of<IMessageSender, ChatIdParams, SendPermission>(s => s.Sender, (port, p, ct) => port.GetSendPermissionAsync(p.ChatId, ct)),

@@ -79,6 +79,12 @@ internal sealed class LinuxServerAdmin(LinuxServerAdmin.Parts parts) : IServerAd
         return accounts;
     }
 
+    /// <summary>
+    /// Told of an account removed here, as a client's sign-out tells the host (<c>ProtocolServices.AccountEnded</c>: <c>messenger</c>, <c>instagram</c>, or
+    /// <c>voice</c> with its key), so what the host keeps of it goes too: the whole history's copies of its conversations (stage 8).
+    /// </summary>
+    public Action<string, string?>? Ended { get; set; }
+
     public async Task<AccountRemoved> RemoveAccountAsync(string provider, string? key, CancellationToken cancellationToken = default)
     {
         switch (provider)
@@ -87,14 +93,24 @@ internal sealed class LinuxServerAdmin(LinuxServerAdmin.Parts parts) : IServerAd
                 parts.Log("server account remove refused provider=google-messages reason=not_offered");
                 throw new InvalidOperationException(AccountRemoveWords.NotOffered);
             case ServerAccountProviders.GoogleVoice:
-                return await RemoveVoiceAsync(key).ConfigureAwait(false);
+                return Told(await RemoveVoiceAsync(key).ConfigureAwait(false), "voice", key);
             case ServerAccountProviders.Messenger:
             case ServerAccountProviders.Instagram:
-                return await RemoveMovableAsync(provider, cancellationToken).ConfigureAwait(false);
+                return Told(await RemoveMovableAsync(provider, cancellationToken).ConfigureAwait(false), provider == ServerAccountProviders.Messenger ? "messenger" : "instagram", null);
             default:
                 parts.Log("server account remove refused reason=unknown");
                 throw new InvalidOperationException(AccountRemoveWords.Unknown);
         }
+    }
+
+    private AccountRemoved Told(AccountRemoved removed, string account, string? key)
+    {
+        if (removed.Removed)
+        {
+            try { Ended?.Invoke(account, key); }
+            catch (Exception) { /* a hook that fails must not undo the removal */ }
+        }
+        return removed;
     }
 
     /// <summary>How long the list waits for the move's own status, behind whatever a move is doing under its lock (staging a large device database, a verify), before it goes by the gate alone.</summary>

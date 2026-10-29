@@ -284,7 +284,7 @@ The emoji button beside Send opens a picker with three tabs.
 
 - On Messenger and Instagram, press <kbd>Up</kbd> in an empty message box to edit your newest message. It must be text only and already confirmed by the service.
 - An **Editing message** bar appears, the message is tinted, and Send becomes a tick. <kbd>Enter</kbd> saves, <kbd>Esc</kbd> cancels, <kbd>Shift+Enter</kbd> adds a line. Your draft is set aside and comes back afterwards.
-- **Edit message** in a message's menu edits any of your own text messages on those services. Edited messages are labelled **Edited**.
+- **Edit message** in a message's menu edits any of your own text messages on those services. Edited messages are labelled **Edited**. The new words show the moment you save; if the service turns the edit down, the message goes back to what it said and a notice says why.
 - An edit can't leave a message empty. If Messages couldn't confirm an earlier change to a message, it won't change it again until you've checked.
 
 ### Safety nets {#safety-nets}
@@ -388,7 +388,7 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 
 ### Deleting {#deleting}
 
-- **Delete for me** and **Delete for everyone** each ask first, showing the message. Deleted messages read "Message deleted".
+- **Delete for me** and **Delete for everyone** each ask first, showing the message. Once you confirm, the message goes (or reads "Message deleted", for everyone) at once; if the service turns it down, it comes back and a notice says why.
 - Per service: Google Messages has Delete for me only (it removes the message from your account everywhere, your phone included). Messenger has Delete for everyone on your own messages and Delete for me (not in encrypted chats). Instagram has only Delete for everyone, on your own. Google Voice has neither.
 
 ## 9. Reading a conversation {#reading}

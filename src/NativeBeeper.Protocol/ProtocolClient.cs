@@ -875,6 +875,18 @@ public sealed class ProtocolClient : IDisposable, IOperationOutcomes
         try { SharedChanged?.Invoke(this, change); } catch (Exception) { /* a listener that fails must not fail the connection */ }
     }
 
+    /// <summary>A change to the server's whole history (protocol 24), raised on the connection's reader. A change this build cannot read is dropped.</summary>
+    public event EventHandler<HistoryChange>? HistoryChanged;
+
+    private void ReceiveHistory(EventFrame frame)
+    {
+        HistoryChange? change = null;
+        try { change = frame.HasPayload ? frame.Payload.Deserialize<HistoryChange>(ProtocolJson.Options) : null; }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException) { }
+        if (change?.ChatId is null || change.To is null) return;
+        try { HistoryChanged?.Invoke(this, change); } catch (Exception) { /* a listener that fails must not fail the connection */ }
+    }
+
     private void ReceiveEvent(Link on, EventFrame frame)
     {
         // Progress is for the call that is running, not for the feed.
@@ -911,6 +923,13 @@ public sealed class ProtocolClient : IDisposable, IOperationOutcomes
         if (frame.Kind == EventKinds.Shared)
         {
             ReceiveShared(frame);
+            return;
+        }
+        // A change to the server's whole history (protocol 24) goes to whoever keeps a copy and takes no place in the inbox either: the realtime event that caused it
+        // follows it there, as it always did.
+        if (frame.Kind == EventKinds.History)
+        {
+            ReceiveHistory(frame);
             return;
         }
         if (frame.Kind == EventKinds.Resync) Raise(FeedResynced);

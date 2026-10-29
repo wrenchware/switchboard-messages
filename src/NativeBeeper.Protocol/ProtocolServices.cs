@@ -71,4 +71,4 @@ public sealed record ProtocolServices(
     ISharedState? SharedState = null, ConnectionRoster? Connections = null,
     Action<string, string?>? AccountEnded = null, IScheduledCommands? Scheduled = null, IStateImport? Imports = null, IRemoteSignInHost? RemoteSignIn = null,
     IQrPairingHost? QrPairing = null, IRemoteSignInHost? VoiceRemoteSignIn = null, IAccountMove? AccountMove = null, IHostLogs? Logs = null, IServerAdmin? Admin = null,
-    IPushService? Push = null, ConversationSync? ConversationSync = null);
+    IPushService? Push = null, ConversationSync? ConversationSync = null, IWholeHistory? WholeHistory = null);

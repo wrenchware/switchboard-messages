@@ -193,7 +193,9 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
         Sender = message.IsOutgoing ? "You" : message.SenderName ?? chat.Participants.FirstOrDefault(p => p.Id == message.SenderId)?.DisplayName ?? "Unknown sender";
         ShowDate = previous is null || previous.Timestamp.LocalDateTime.Date != message.Timestamp.LocalDateTime.Date;
         var headed = !message.IsHidden && message.Type != "system";
-        ShowTime = headed && (ShowDate || message.Timestamp - previous!.Timestamp >= TimeGap);
+        // A message kept to send later has its time in its own footer: a time above it as well would go the moment Send now made it a send of now, and
+        // the row jumped 20 px (history probe, 2026-10-29).
+        ShowTime = headed && !ScheduledSendRows.Is(message) && (ShowDate || message.Timestamp - previous!.Timestamp >= TimeGap);
         HeaderName = !message.IsOutgoing && chat.Type == "group" ? Sender : "";
         ShowHeader = ShowTime || headed && HeaderName.Length > 0 && !ContinuesGroup;
         ShowSender = !message.IsOutgoing && (ShowDate || previous!.SenderId != message.SenderId || previous.IsOutgoing != message.IsOutgoing ||

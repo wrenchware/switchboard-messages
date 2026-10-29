@@ -114,7 +114,9 @@ internal sealed class HostStartup : IDisposable
             // The originals of the clients' saved photos are the server's to keep (stage 6 slice 8): its own store, read through its own media router.
             SavedPhotos: services.GetRequiredService<SavedPhotos>(), SharedState: shared,
             // The scheduled sends are the server's too (stage 6 slice 11): kept as rows of the shared state, fired by this host with every client closed.
-            Scheduled: new HostScheduled(), ConversationSyncStore: services.GetRequiredService<IPrivateStateStore>()));
+            Scheduled: new HostScheduled(), ConversationSyncStore: services.GetRequiredService<IPrivateStateStore>(),
+            // Every conversation kept whole (SWITCHBOARD.md stage 8, protocol 24), in the server's own folder: the app's in-process host keeps none.
+            WholeHistory: new NativeBeeper.Storage.HistoryDatabase(AppPaths.Combine("Server", "history.db"), protector)));
         step.Took("host");
         // The sign-in keeper is not started here: it listens for Google's refusals and renews, so it starts with the restore and only with --restore
         // (RestoreAsync), the one thing that lets a provider touch the network.

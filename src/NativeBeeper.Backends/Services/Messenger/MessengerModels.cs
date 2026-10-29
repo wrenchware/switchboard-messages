@@ -18,7 +18,9 @@ internal sealed record MessengerChat(string Id, string Title, MessengerPerson[] 
     long MutedUntil = 0,
     // The group changes the helper says Messenger takes from this account here: an ordinary group it is in, with
     // removing for its admins. Appended (2026-10-04).
-    bool CanRename = false, bool CanAddMembers = false, bool CanRemoveMembers = false);
+    bool CanRename = false, bool CanAddMembers = false, bool CanRemoveMembers = false,
+    // Who wrote the preview's words in a group, as its messages name them; none for this account and one-to-ones. Appended (2026-10-28).
+    string? PreviewSender = null, string? PreviewName = null);
 internal sealed record MessengerMedia(string Id, string? Name, string? Mime, long Size, double Width, double Height, bool Video,
     string? Preview = null, bool Animated = false, string? Link = null, bool Play = false, string? Description = null, string? Caption = null);
 internal sealed record MessengerMessage(string Id, string ChatId, string Sender, string? Name, string Text, DateTimeOffset At,
@@ -71,8 +73,11 @@ internal static class MessengerModels
 
     public static ChatSummary Map(MessengerChat chat)
     {
+        // A group's line names who wrote it, as its messages do: the phone's line gained the name when the conversation was read and lost it when the
+        // phone let it go (its diary, 2026-10-28), as a Google group's did before GoogleModels named the writer.
+        var writer = chat.Group && !chat.PreviewOutgoing && !string.IsNullOrEmpty(chat.PreviewSender) ? chat.PreviewSender : null;
         var preview = string.IsNullOrWhiteSpace(chat.Preview) ? null
-            : new ChatMessage(Qualify("preview:" + chat.Id), Qualify(chat.Id), "", null, chat.At, "", chat.Preview, "text",
+            : new ChatMessage(Qualify("preview:" + chat.Id), Qualify(chat.Id), writer is null ? "" : Person(writer), writer is null ? null : chat.PreviewName, chat.At, "", chat.Preview, "text",
                 chat.PreviewOutgoing, false, false, null, null, [], [], new(null, null, null, null, new Dictionary<string, bool?>()));
         return new(Qualify(chat.Id), Account, chat.Title, "Messenger", chat.Group ? "group" : "single", chat.At,
             chat.Unread && !chat.PreviewOutgoing ? 1 : 0, false, false, chat.Archived,

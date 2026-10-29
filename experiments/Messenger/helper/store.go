@@ -1338,6 +1338,7 @@ func (s *store) view(current *thread) viewChat {
 	previewOutgoing := current.previewOutgoing
 	// Older saved identities predate previewOutgoing. Recover it from the newest actual message when its timestamp
 	// matches the thread activity closely enough to be the provider's preview; retain markSent's value before an echo.
+	var previewSender int64
 	if !previewOutgoing {
 		var latest *message
 		for _, candidate := range s.messages[current.key] {
@@ -1345,9 +1346,19 @@ func (s *store) view(current *thread) viewChat {
 				latest = candidate
 			}
 		}
-		if latest != nil && latest.sender == s.self && current.lastActivity >= latest.timestamp && current.lastActivity-latest.timestamp <= 1000 {
-			previewOutgoing = true
+		if latest != nil && current.lastActivity >= latest.timestamp && current.lastActivity-latest.timestamp <= 1000 {
+			if latest.sender == s.self {
+				previewOutgoing = true
+			} else if !current.kind.IsOneToOne() {
+				// A group's line names who wrote it, as the conversation's own messages name them: the phone's line gained
+				// the name when the conversation was read and lost it when the phone let it go (its diary, 2026-10-28).
+				previewSender = latest.sender
+			}
 		}
+	}
+	previewSenderID, previewName := "", ""
+	if previewSender != 0 {
+		previewSenderID, previewName = strconv.FormatInt(previewSender, 10), s.contacts[previewSender]
 	}
 	manage := s.manageable(current)
 	return viewChat{
@@ -1364,6 +1375,8 @@ func (s *store) view(current *thread) viewChat {
 		Title:           title,
 		Participants:    participants,
 		Preview:         current.snippet,
+		PreviewSender:   previewSenderID,
+		PreviewName:     previewName,
 		PreviewOutgoing: previewOutgoing,
 		At:              time.UnixMilli(current.lastActivity).UTC(),
 		// A watermark of zero means Messenger has not told us; treat that as read rather than inventing unread chats.

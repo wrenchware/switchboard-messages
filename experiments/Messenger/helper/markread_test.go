@@ -93,6 +93,33 @@ func TestOutgoingPreviewCannotRemainUnread(t *testing.T) {
 	}
 }
 
+func TestGroupPreviewNamesItsWriter(t *testing.T) {
+	s := newStore()
+	s.self = 1
+	s.contacts[2] = "Synthetic Writer"
+	s.get(8).kind = table.GROUP_THREAD
+	s.addEncrypted(8, "incoming", 2, "hello", "", 1000)
+	// Facebook's thread activity can be a few milliseconds later than the message.
+	s.get(8).lastActivity = 1004
+	if chat, _ := s.chatByKey(8); chat.PreviewSender != "2" || chat.PreviewName != "Synthetic Writer" {
+		t.Fatalf("group preview names %q %q, want the writer", chat.PreviewSender, chat.PreviewName)
+	}
+	// Activity well after the newest message is something else (a reaction): the line's words are not that message's.
+	s.get(8).lastActivity = 9000
+	if chat, _ := s.chatByKey(8); chat.PreviewSender != "" {
+		t.Fatal("a later activity was named as the newest message's writer")
+	}
+	s.markSent(8, "reply", 10000)
+	if chat, _ := s.chatByKey(8); chat.PreviewSender != "" || !chat.PreviewOutgoing {
+		t.Fatal("this account's own line named a writer")
+	}
+	s.get(9).kind = table.ONE_TO_ONE
+	s.addEncrypted(9, "direct", 2, "hi", "", 1000)
+	if chat, _ := s.chatByKey(9); chat.PreviewSender != "" {
+		t.Fatal("a one-to-one's line named its writer")
+	}
+}
+
 func TestEncryptedReadPayloadUsesReadingTimeAndCorrectAddressing(t *testing.T) {
 	for _, group := range []bool{false, true} {
 		t.Run(map[bool]string{false: "direct", true: "group"}[group], func(t *testing.T) {

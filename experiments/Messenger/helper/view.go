@@ -78,6 +78,9 @@ type viewChat struct {
 	Title             string            `json:"title"`
 	Participants      []viewParticipant `json:"participants"`
 	Preview           string            `json:"preview"`
+	// Who wrote the preview's words in a group, as the messages name them; left out for this account and one-to-ones.
+	PreviewSender     string            `json:"previewSender,omitempty"`
+	PreviewName       string            `json:"previewName,omitempty"`
 	At                time.Time         `json:"at"`
 	Unread            bool              `json:"unread"`
 	// This account's read watermark (Unix ms): the app draws "New messages" above what came after it. Zero when

@@ -22,10 +22,13 @@ internal sealed partial class LinuxHostStartup
 {
     private SerialQueue? signInQueue;
 
-    // Google's feed is gated on a saved pairing, as the Windows server's is: let go, it connects that pairing by itself.
-    private static GatedRealtimeFeed GoogleFeed(GoogleMessagesBackend google, MessengerBackend messenger, InstagramBackend instagram) =>
-        new(new CompositeRealtimeFeed(() => MessagingRouter.GoogleMessagesExpected, (ProviderScopes.Google, google), (ProviderScopes.Messenger, messenger),
-            (ProviderScopes.Instagram, instagram)));
+    // Google's feed is gated on a saved pairing, as the Windows server's is: let go, it connects that pairing by itself. Google Voice's joins it when Voice runs
+    // here (its own Chrome): left out, from moving day (2026-10-12) to 2026-10-29 no Voice arrival reached a client, a push or the whole history as it happened,
+    // only when something read the conversation again.
+    private static GatedRealtimeFeed GoogleFeed(GoogleMessagesBackend google, MessengerBackend messenger, InstagramBackend instagram, GoogleVoiceBackend voice, bool voiceRuns) =>
+        new(new CompositeRealtimeFeed(() => MessagingRouter.GoogleMessagesExpected, voiceRuns
+            ? [(ProviderScopes.Google, google), (ProviderScopes.Messenger, messenger), (ProviderScopes.VoicePrefix, voice), (ProviderScopes.Instagram, instagram)]
+            : [(ProviderScopes.Google, google), (ProviderScopes.Messenger, messenger), (ProviderScopes.Instagram, instagram)]));
 
     // Google Voice's slot too when it runs here (beside the server's own Chrome): a client's restore of it is then the host's own, as on the Windows server.
     private static RestoreOnce GoogleRestores(bool voiceRuns) => new(voiceRuns ? [RestoreOnce.Messenger, RestoreOnce.Instagram, RestoreOnce.Google, RestoreOnce.Voice]

@@ -83,7 +83,7 @@ internal sealed partial class LinuxHostStartup : IDisposable
         // them (LinuxHostStartup.Google.cs).
         var feed = withGoogle is null
             ? new GatedRealtimeFeed(new CompositeRealtimeFeed(() => false, (ProviderScopes.Messenger, messenger), (ProviderScopes.Instagram, instagram)))
-            : GoogleFeed(google, messenger, instagram);
+            : GoogleFeed(google, messenger, instagram, services.GetRequiredService<GoogleVoiceBackend>(), withGoogle.VoiceRuns);
         // Both slots exist whenever the host restores, so a client's restore of either waits for (or is answered skipped by) the paced one, never logs in
         // beside it or ahead of the ledger; and Google's too when it runs.
         var restores = !restore ? RestoreOnce.None : withGoogle is null ? new RestoreOnce([RestoreOnce.Messenger, RestoreOnce.Instagram]) : GoogleRestores(withGoogle.VoiceRuns);

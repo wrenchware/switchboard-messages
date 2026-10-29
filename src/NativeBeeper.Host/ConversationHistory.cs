@@ -86,6 +86,8 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     public TimeSpan RetryAfter { get; init; } = TimeSpan.FromMinutes(2);
     /// <summary>The longest a resolve waits for an event's own read of the same message before it asks the service itself.</summary>
     public TimeSpan ResolveWait { get; init; } = TimeSpan.FromSeconds(3);
+    /// <summary>The longest a page, a sync or a held read waits for the conversation's events already under way to be written.</summary>
+    public TimeSpan SettleWait { get; init; } = TimeSpan.FromSeconds(3);
 
     /// <summary>Opens the store and starts the background work.</summary>
     public void Start()
@@ -167,6 +169,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     {
         var limit = Math.Clamp(request.Limit ?? WholeHistoryLimits.DefaultPage, 1, WholeHistoryLimits.MaxPage);
         var chat = await FilledAsync(request.ChatId, cancellationToken).ConfigureAwait(false);
+        await SettledAsync(chat, cancellationToken).ConfigureAwait(false);
         await chat.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -228,6 +231,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             if (!chat.State.Filled) return page ?? await chats.GetMessagesAsync(chatId, null, cancellationToken).ConfigureAwait(false);
         }
         else if (olderThan is null && Stale(chat)) Enqueue(chatId, Work.Open);
+        if (olderThan is null) await SettledAsync(chat, cancellationToken).ConfigureAwait(false);
         var state = chat.State;
         (IReadOnlyList<ChatMessage> Messages, bool More) result = olderThan is null
             ? await NewestAsync(chatId, state, WholeHistoryLimits.DefaultPage, cancellationToken).ConfigureAwait(false)
@@ -267,12 +271,14 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     // ---- IMessagePeek ----
 
     public async ValueTask<ChatMessage?> PeekAsync(string chatId, string messageId, CancellationToken cancellationToken = default) =>
-        await HeldMessageAsync(chatId, messageId, cancellationToken).ConfigureAwait(false)
+        await PendingAsync(chatId, messageId, cancellationToken).ConfigureAwait(false)
+            ?? await HeldMessageAsync(chatId, messageId, cancellationToken).ConfigureAwait(false)
             ?? (peek is null ? null : await peek.PeekAsync(chatId, messageId, cancellationToken).ConfigureAwait(false));
 
-    // The copy keeps only whole messages (pages, and event reads a whole copy stands behind), so what it holds is whole.
+    // The copy keeps only whole messages (pages, and event reads a whole copy stands behind), so what it holds is whole, and so is what an event's read brings.
     public async ValueTask<ChatMessage?> PeekWholeAsync(string chatId, string messageId, CancellationToken cancellationToken = default) =>
-        await HeldMessageAsync(chatId, messageId, cancellationToken).ConfigureAwait(false)
+        await PendingAsync(chatId, messageId, cancellationToken).ConfigureAwait(false)
+            ?? await HeldMessageAsync(chatId, messageId, cancellationToken).ConfigureAwait(false)
             ?? (peek is null ? null : await peek.PeekWholeAsync(chatId, messageId, cancellationToken).ConfigureAwait(false));
 
     public bool HoldsPartialCopies(string chatId) => peek?.HoldsPartialCopies(chatId) ?? false;
@@ -296,8 +302,10 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
 
     public async Task<HeldHistory?> ReadHeldAsync(string chatId, DateTimeOffset after, int limit, CancellationToken cancellationToken = default)
     {
-        if (await IsReadyAsync(cancellationToken).ConfigureAwait(false) && held.TryGetValue(chatId, out var chat) && chat.State is { Filled: true } state && limit > 0)
+        if (await IsReadyAsync(cancellationToken).ConfigureAwait(false) && held.TryGetValue(chatId, out var chat) && chat.State.Filled && limit > 0)
         {
+            await SettledAsync(chat, cancellationToken).ConfigureAwait(false);
+            var state = chat.State;
             var rows = await NewerAsync(chatId, state, after.AddTicks(1), limit, cancellationToken, newestFirst: true).ConfigureAwait(false);
             // Everything after the moment is here when the copy is known whole, reaches back past it (or to the conversation's start), and the newest asked
             // for cover it all.
@@ -423,6 +431,27 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 return;
             }
         }
+    }
+
+    /// <summary>
+    /// Waits, at most <see cref="SettleWait"/>, for what the conversation's events have already set going to be written, so a read served just after an event
+    /// holds its messages: the event has gone on to the client before them, and a copy read without them a moment earlier was kept as current.
+    /// </summary>
+    private async Task SettledAsync(Held chat, CancellationToken cancellationToken)
+    {
+        Task tail;
+        lock (chat.ChainLock) tail = chat.Tail;
+        if (tail.IsCompleted) return;
+        try { await tail.WaitAsync(SettleWait, cancellationToken).ConfigureAwait(false); }
+        catch (Exception failure) when (failure is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { }
+    }
+
+    /// <summary>A message an event's read is bringing right now, waited for (at most <see cref="ResolveWait"/>); null when none is on its way.</summary>
+    private async Task<ChatMessage?> PendingAsync(string chatId, string messageId, CancellationToken cancellationToken)
+    {
+        if (!resolving.TryGetValue(Key(chatId, messageId), out var pending)) return null;
+        try { return await pending.WaitAsync(ResolveWait, cancellationToken).ConfigureAwait(false); }
+        catch (Exception failure) when (failure is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { return null; }
     }
 
     private IEnumerable<Held> InScope(string? scope) =>
@@ -600,7 +629,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 // What the service has now does not reach what is known whole: start the conversation over from this, and every copy of it does the same.
                 var newest = gathered.Count > 0 ? Position.Of(gathered[^1]) : (Position?)null;
                 var restarted = new State(true, !more, more ? cursor : null, gathered.Count > 0 ? Position.Of(gathered[0]) : null, newest, newest);
-                await WriteAsync(chat, gathered, [], restarted, reset: true).ConfigureAwait(false);
+                await WriteAsync(chat, gathered, [], restarted, reset: true, found: true).ConfigureAwait(false);
                 Settle(chat, suspicions);
                 log($"history fill chat={Tag(chat.ChatId)} reason={Name(reason)} outcome=reset rows={gathered.Count} pages={pages} ms={Ms(clock)}");
                 return (page, true);
@@ -622,7 +651,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 if (state.Floor is not { } floor || Position.Of(gathered[0]).CompareTo(floor) < 0)
                     joined = joined with { Floor = Position.Of(gathered[0]), Cursor = more ? cursor : null, Complete = !more };
             }
-            var written = await WriteAsync(chat, gathered, absent, joined).ConfigureAwait(false);
+            var written = await WriteAsync(chat, gathered, absent, joined, found: true).ConfigureAwait(false);
             if (reached) Settle(chat, suspicions);
             log($"history fill chat={Tag(chat.ChatId)} reason={Name(reason)} outcome=joined rows={gathered.Count} put={written.Put.Count} absent={written.Removed.Count} pages={pages} reached={(reached ? 1 : 0)} ms={Ms(clock)}");
             return (page, reached);
@@ -820,7 +849,14 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     /// Writes a change to one conversation (the caller holds its gate) with the state it leaves the conversation in, and only once that is written takes the
     /// state and puts what changed in the event sequence. The write itself is never cancelled: a service's page in hand is kept, or nothing changes.
     /// </summary>
-    private async Task<HistoryWritten> WriteAsync(Held chat, IReadOnlyList<ChatMessage> puts, IReadOnlyList<string> removes, State next, bool reset = false, bool announce = true)
+    /// <remarks>
+    /// <paramref name="found"/>: the write is a read of the service's pages (a join or a fresh start), not an event's own messages. What it put and removed is then
+    /// said as realtime events too, history-marked so no one notifies for it: a client that keeps its own copy and ignores history changes (the PC, every client
+    /// below 24) learns of a message no event announced, as a provider's event would have told it. A Google Voice text the PC had read a moment before its event
+    /// reached the copy stayed missing there for good (2026-10-29).
+    /// </remarks>
+    private async Task<HistoryWritten> WriteAsync(Held chat, IReadOnlyList<ChatMessage> puts, IReadOnlyList<string> removes, State next, bool reset = false, bool announce = true,
+        bool found = false)
     {
         if (chat.Forgotten) return new(chat.Seq, [], [], false);
         var from = chat.Seq;
@@ -844,6 +880,14 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             var truncated = reset || messages.Length > WholeHistoryLimits.MaxEventMessages;
             sequence.AppendHistory(new HistoryChange(chat.ChatId, Revision(from), Revision(written.Seq), truncated ? [] : messages, truncated ? [] : written.Removed,
                 reset, truncated));
+            if (found)
+            {
+                var newest = messages.OrderByDescending(Position.Of).Take(MaxEventIds).Select(message => message.Id).ToArray();
+                if (newest.Length > 0) sequence.Append(new RealtimeEvent(RealtimeKind.MessageChanged, chat.ChatId, newest, false, DateTimeOffset.UtcNow, IsHistory: true));
+                if (written.Removed.Count > 0) sequence.Append(new RealtimeEvent(RealtimeKind.MessageDeleted, chat.ChatId, [.. written.Removed], ReceivedAt: DateTimeOffset.UtcNow));
+                // More than one event names: a copy kept closed is read again when it opens rather than patched.
+                if (messages.Length > MaxEventIds || reset) sequence.Append(new RealtimeEvent(RealtimeKind.ChatChanged, chat.ChatId, [chat.ChatId], ReceivedAt: DateTimeOffset.UtcNow));
+            }
         }
         return written;
     }

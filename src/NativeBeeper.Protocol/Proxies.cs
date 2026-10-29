@@ -35,10 +35,16 @@ namespace NativeBeeper.Protocol;
 // Before the first state the cache answers conservatively (HostStateCache); a client that has a state in hand primes it.
 
 /// <summary>What the messaging router is to the window: the chat list, messages, sending, read state, actions, settings, connection state, peeks and history windows.</summary>
-public sealed class MessagingProxy(ProtocolClient client, HostStateCache state, TimeSpan? readableLifetime = null)
+public sealed class MessagingProxy(ProtocolClient client, HostStateCache state, TimeSpan? readableLifetime = null, Action<string>? log = null)
     : IChatReader, ILinkPreviewLoader, IMessageSender, IAdmittedReadStateWriter, IMessageActions, IMessageMutations, IChatSettingsBackend, IChatDeletion,
       IProviderConnectionState, IMessagePeek, IHistoryWindowReader
 {
+    // A server that keeps the whole history (protocol 24) is followed in a copy of each conversation read here, which answers the reads below without a call
+    // while it is known current (HistoryCopies); otherwise each goes to the server as before.
+    private readonly HistoryCopies copies = new(client, log);
+
+    /// <summary>The copies behind the reads (for the checks).</summary>
+    public HistoryCopies Copies => copies;
     // Which Google conversations the archive can read around a moment: asked for the host's answer when a conversation is opened or its
     // messages are read, so that by the time the window asks (CanReadWindow, synchronous) the answer is here.
     private readonly Remembered<string, bool> readable = new(chatId => client.CallAsync<ChatIdParams, bool>(ProtocolMethods.HistoryCanReadWindow, new(chatId)),
@@ -60,7 +66,12 @@ public sealed class MessagingProxy(ProtocolClient client, HostStateCache state, 
     public Task<Page<ChatMessage>> GetMessagesAsync(string chatId, string? olderThan = null, CancellationToken cancellationToken = default)
     {
         WarmReadable(chatId);
-        return client.CallAsync<MessagesPageParams, Page<ChatMessage>>(ProtocolMethods.MessagesPage, new(chatId, olderThan), cancellationToken);
+        return copies.Enabled ? FromCopyAsync() : client.CallAsync<MessagesPageParams, Page<ChatMessage>>(ProtocolMethods.MessagesPage, new(chatId, olderThan), cancellationToken);
+
+        async Task<Page<ChatMessage>> FromCopyAsync() =>
+            (olderThan is null ? await copies.NewestAsync(chatId, cancellationToken).ConfigureAwait(false)
+                : await copies.OlderAsync(chatId, olderThan, cancellationToken).ConfigureAwait(false))
+            ?? await client.CallAsync<MessagesPageParams, Page<ChatMessage>>(ProtocolMethods.MessagesPage, new(chatId, olderThan), cancellationToken).ConfigureAwait(false);
     }
 
     // ---- ILinkPreviewLoader ----
@@ -75,7 +86,8 @@ public sealed class MessagingProxy(ProtocolClient client, HostStateCache state, 
     public Task<SendReceipt> SendTextAsync(string chatId, string text, CancellationToken cancellationToken = default) =>
         client.MutateAsync<SendTextParams, SendReceipt>(ProtocolMethods.MessagesSend, new(ProtocolClient.SendOperationId(), chatId, text), cancellationToken);
     public Task<ChatMessage> ResolveMessageAsync(string chatId, string messageId, CancellationToken cancellationToken = default) =>
-        client.CallAsync<MessageIdParams, ChatMessage>(ProtocolMethods.MessagesResolve, new(chatId, messageId), cancellationToken);
+        copies.Find(chatId, messageId) is { } held ? Task.FromResult(held)
+            : client.CallAsync<MessageIdParams, ChatMessage>(ProtocolMethods.MessagesResolve, new(chatId, messageId), cancellationToken);
 
     // ---- IReadStateWriter ----
     public Task<bool> CanMarkReadAsync(string chatId, CancellationToken cancellationToken = default) =>
@@ -137,11 +149,14 @@ public sealed class MessagingProxy(ProtocolClient client, HostStateCache state, 
     // ---- IMessagePeek: display-only and never throws in one process, so a connection that fails is a miss, not an error ----
     public async ValueTask<ChatMessage?> PeekAsync(string chatId, string messageId, CancellationToken cancellationToken = default)
     {
+        if (copies.Find(chatId, messageId) is { } held) return held;
         try { return await client.CallNullableAsync<MessageIdParams, ChatMessage>(ProtocolMethods.MessagesPeek, new(chatId, messageId), cancellationToken).ConfigureAwait(false); }
         catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
     }
     public async ValueTask<ChatMessage?> PeekWholeAsync(string chatId, string messageId, CancellationToken cancellationToken = default)
     {
+        // The copy holds messages as the server's copy holds them: whole.
+        if (copies.Find(chatId, messageId) is { } held) return held;
         try { return await client.CallNullableAsync<MessageIdParams, ChatMessage>(ProtocolMethods.MessagesPeekWhole, new(chatId, messageId), cancellationToken).ConfigureAwait(false); }
         catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
     }
@@ -174,7 +189,8 @@ public sealed class MessagingProxy(ProtocolClient client, HostStateCache state, 
         return fresher.Messages;
     }
     public Task<HeldHistory?> ReadHeldAsync(string chatId, DateTimeOffset after, int limit, CancellationToken cancellationToken = default) =>
-        client.CallNullableAsync<HistoryHeldParams, HeldHistory>(ProtocolMethods.HistoryHeld, new(chatId, after, limit), cancellationToken);
+        copies.Held(chatId, after, limit) is { } held ? Task.FromResult<HeldHistory?>(held)
+            : client.CallNullableAsync<HistoryHeldParams, HeldHistory>(ProtocolMethods.HistoryHeld, new(chatId, after, limit), cancellationToken);
 }
 
 /// <summary>What the directory router is to the window: contacts, new chats, groups and the members of one.</summary>

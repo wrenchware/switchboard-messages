@@ -34,6 +34,8 @@ internal sealed class ReadDrift(Func<string, string, CancellationToken, Task<boo
         public ChatSummary? Last;
         public int Verifying;
         public int Reported;
+        // Its grace has been waited out: a timer can end a moment before the clock agrees, and the answer asked for then must not count as within it.
+        public volatile bool GraceOver;
     }
 
     private readonly ConcurrentDictionary<string, Mark> marks = new(StringComparer.Ordinal);
@@ -61,7 +63,7 @@ internal sealed class ReadDrift(Func<string, string, CancellationToken, Task<boo
         mark.Last = chat;
         if (chat.UnreadCount <= 0 || chat.IsSpam) return;
         var age = Now() - mark.AcceptedAt;
-        if (age < Grace)
+        if (age < Grace && !mark.GraceOver)
         {
             if (Interlocked.Exchange(ref mark.Verifying, 1) == 0) _ = VerifyLaterAsync(chat.Id, mark, Grace - age);
             return;
@@ -80,6 +82,7 @@ internal sealed class ReadDrift(Func<string, string, CancellationToken, Task<boo
         {
             await Task.Delay(wait).ConfigureAwait(false);
             if (!marks.TryGetValue(chatId, out var current) || !ReferenceEquals(current, mark)) return;
+            mark.GraceOver = true;
             // Asked again where that is a memory read: its answer passes through Observe like any other, now past the grace.
             if (reread is not null && !Instagram(chatId)) { await reread(chatId, CancellationToken.None).ConfigureAwait(false); return; }
             if (mark.Last is { UnreadCount: > 0, IsSpam: false } last && !Newer(last, mark)) await RevertedAsync(chatId, mark).ConfigureAwait(false);

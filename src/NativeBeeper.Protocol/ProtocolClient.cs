@@ -878,13 +878,29 @@ public sealed class ProtocolClient : IDisposable, IOperationOutcomes
     /// <summary>A change to the server's whole history (protocol 24), raised on the connection's reader. A change this build cannot read is dropped.</summary>
     public event EventHandler<HistoryChange>? HistoryChanged;
 
+    /// <summary>
+    /// A realtime event as its frame is read, on the connection's reader and ahead of the feed's own item for it: what keeps a copy of the history (<see cref="HistoryCopies"/>)
+    /// learns that a conversation is about to change before anything reads it for the change. A listener queues and returns.
+    /// </summary>
+    public event EventHandler<RealtimeEvent>? RealtimeRead;
+
+    /// <summary>A history frame that could not be read, as it is read: whatever copy it changed is behind until it asks again.</summary>
+    public event EventHandler? HistoryUnreadable;
+
+    /// <summary>The current connection has an event feed (subscribed, or subscribing): changes reach <see cref="HistoryChanged"/> as they are made.</summary>
+    public bool HasEventFeed => link is { Closed: false } current && Volatile.Read(ref current.Inbox) is not null;
+
     private void ReceiveHistory(EventFrame frame)
     {
         HistoryChange? change = null;
         try { change = frame.HasPayload ? frame.Payload.Deserialize<HistoryChange>(ProtocolJson.Options) : null; }
         catch (Exception ex) when (ex is JsonException or NotSupportedException) { }
-        if (change?.ChatId is null || change.To is null) return;
-        try { HistoryChanged?.Invoke(this, change); } catch (Exception) { /* a listener that fails must not fail the connection */ }
+        try
+        {
+            if (change?.ChatId is null || change.To is null) HistoryUnreadable?.Invoke(this, EventArgs.Empty);
+            else HistoryChanged?.Invoke(this, change);
+        }
+        catch (Exception) { /* a listener that fails must not fail the connection */ }
     }
 
     private void ReceiveEvent(Link on, EventFrame frame)
@@ -942,6 +958,10 @@ public sealed class ProtocolClient : IDisposable, IOperationOutcomes
             RealtimeEvent? change = null;
             try { change = frame.HasPayload ? frame.Payload.Deserialize<RealtimeEvent>(ProtocolJson.Options) : null; }
             catch (Exception ex) when (ex is JsonException or NotSupportedException) { }
+            if (change is not null)
+            {
+                try { RealtimeRead?.Invoke(this, change); } catch (Exception) { /* a listener that fails must not fail the connection */ }
+            }
             item = new EventItem(frame.Seq, change);
         }
         else if (frame.Kind == EventKinds.State)

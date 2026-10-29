@@ -81,6 +81,41 @@ public static class WholeHistoryLimits
     public const int MaxChangedChats = 5000;
 }
 
+/// <summary>
+/// Where a message sorts in every copy (its time, then its sort key, then its id), and the page position <c>messages.page</c> hands out for it when the page
+/// comes from a copy of the whole history: the server's, or a client's own (<see cref="HistoryCopies"/>), which hand out the same positions so either reads on
+/// from the other's.
+/// </summary>
+public readonly record struct HistoryPosition(long Ticks, string SortKey, string Id) : IComparable<HistoryPosition>
+{
+    public const string CursorPrefix = "h1|";
+
+    public static HistoryPosition Of(ChatMessage message) => new(message.Timestamp.UtcTicks, message.SortKey ?? "", message.Id);
+
+    public int CompareTo(HistoryPosition other) =>
+        Ticks != other.Ticks ? Ticks.CompareTo(other.Ticks)
+        : string.CompareOrdinal(SortKey, other.SortKey) is var sort and not 0 ? sort
+        : string.CompareOrdinal(Id, other.Id);
+
+    public static bool IsCursor(string? cursor) => cursor?.StartsWith(CursorPrefix, StringComparison.Ordinal) == true;
+
+    public static string Cursor(ChatMessage oldest) => CursorPrefix + oldest.Timestamp.UtcTicks.ToString(System.Globalization.CultureInfo.InvariantCulture) + "|"
+        + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(oldest.SortKey ?? "")) + "|" + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(oldest.Id));
+
+    public static HistoryPosition? ReadCursor(string cursor)
+    {
+        if (!IsCursor(cursor)) return null;
+        var parts = cursor[CursorPrefix.Length..].Split('|');
+        if (parts.Length != 3 || !long.TryParse(parts[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var ticks)) return null;
+        try
+        {
+            return new HistoryPosition(ticks, System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[1])),
+                System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[2])));
+        }
+        catch (FormatException) { return null; }
+    }
+}
+
 /// <summary>The server's whole copy of every conversation, as <see cref="ProtocolMethods.HistorySync"/>, <see cref="ProtocolMethods.HistoryOlder"/> and
 /// <see cref="ProtocolMethods.HistoryChanges"/> serve it.</summary>
 public interface IWholeHistory

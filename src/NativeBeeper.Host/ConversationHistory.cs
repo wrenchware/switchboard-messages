@@ -8,6 +8,7 @@ using NativeBeeper.Core.Messaging;
 using NativeBeeper.Core.Services;
 using NativeBeeper.Protocol;
 using NativeBeeper.Storage;
+using Position = NativeBeeper.Protocol.HistoryPosition;
 
 namespace NativeBeeper.Host;
 
@@ -39,7 +40,6 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     public const int CatchUpChats = 100;
     /// <summary>The most messages one event is read for; an event naming more makes the conversation read again whole.</summary>
     public const int MaxEventIds = 64;
-    private const string CursorPrefix = "h1|";
     private const string InstagramPrefix = "instagram:";
 
     private readonly HistoryDatabase db;
@@ -170,26 +170,35 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         var limit = Math.Clamp(request.Limit ?? WholeHistoryLimits.DefaultPage, 1, WholeHistoryLimits.MaxPage);
         var chat = await FilledAsync(request.ChatId, cancellationToken).ConfigureAwait(false);
         await SettledAsync(chat, cancellationToken).ConfigureAwait(false);
-        await chat.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        // Not under Gate, which a read of the service holds for as long as that takes (a page waits at most SettleWait for the events under way, and so does
+        // this). The numbers come first, so what is read after them is at least that new: a change written meanwhile comes again from that revision in the
+        // feed, and a reset meanwhile arrives as a reset, which a copy cannot patch and so asks again.
+        long seq, resetSeq;
+        lock (chat.Numbers) (seq, resetSeq) = (chat.Seq, chat.ResetSeq);
+        var state = chat.State;
+        var since = Parse(request.Since);
+        var revision = Revision(seq);
+        HistorySyncResult? answer = null;
+        if (since is { } at && at <= db.Seq && at >= resetSeq)
         {
-            var state = chat.State;
-            var since = Parse(request.Since);
-            var revision = Revision(chat.Seq);
-            if (since is { } at && at <= db.Seq && at >= chat.ResetSeq)
+            var changed = await db.ReadChangedAsync(chat.ChatId, at, WholeHistoryLimits.MaxChanges + 1, cancellationToken).ConfigureAwait(false);
+            if (changed.Count <= WholeHistoryLimits.MaxChanges)
             {
-                var changed = await db.ReadChangedAsync(chat.ChatId, at, WholeHistoryLimits.MaxChanges + 1, cancellationToken).ConfigureAwait(false);
-                if (changed.Count <= WholeHistoryLimits.MaxChanges)
-                {
-                    var messages = changed.Where(row => !row.Removed).Select(Message).OfType<ChatMessage>().ToArray();
-                    var removed = changed.Where(row => row.Removed).Select(row => row.MessageId).ToArray();
-                    return new(revision, false, messages, removed, MoreOlder: true, state.Complete);
-                }
+                var messages = changed.Where(row => !row.Removed).Select(Message).OfType<ChatMessage>().ToArray();
+                var removed = changed.Where(row => row.Removed).Select(row => row.MessageId).ToArray();
+                answer = new(revision, false, messages, removed, MoreOlder: true, state.Complete);
             }
-            var newest = await NewestAsync(chat.ChatId, state, limit, cancellationToken).ConfigureAwait(false);
-            return new(revision, true, newest.Messages, [], newest.More, state.Complete);
         }
-        finally { chat.Gate.Release(); }
+        if (answer is null)
+        {
+            var newest = await NewestAsync(chat.ChatId, state, limit, cancellationToken).ConfigureAwait(false);
+            answer = new(revision, true, newest.Messages, [], newest.More, state.Complete);
+        }
+        // A sync is how a client of 24 opens a conversation (and reads its newest after an event), so it is read again behind the answer when stale, as a
+        // newest page is: otherwise a conversation the service changed without an event stays as it was until the walk. Queued after the answer, so the
+        // read cannot take Gate ahead of the events this sync waited for.
+        if (Stale(chat)) Enqueue(request.ChatId, Work.Open);
+        return answer;
     }
 
     public async Task<HistoryOlderResult> OlderAsync(HistoryOlderParams request, CancellationToken cancellationToken = default)
@@ -219,7 +228,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     public async Task<Page<ChatMessage>> GetMessagesAsync(string chatId, string? olderThan = null, CancellationToken cancellationToken = default)
     {
         // A cursor of the service's (handed out before this copy held the conversation) goes on to it, as before.
-        if (olderThan is not null && !olderThan.StartsWith(CursorPrefix, StringComparison.Ordinal))
+        if (olderThan is not null && !HistoryPosition.IsCursor(olderThan))
             return await chats.GetMessagesAsync(chatId, olderThan, cancellationToken).ConfigureAwait(false);
         if (!await IsReadyAsync(cancellationToken).ConfigureAwait(false)) return await chats.GetMessagesAsync(chatId, olderThan, cancellationToken).ConfigureAwait(false);
         var chat = Chat(chatId);
@@ -871,8 +880,11 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             chat.MarkSuspect();
         }
         if (!written.Changed) return written;
-        chat.Seq = written.Seq;
-        if (reset) chat.ResetSeq = written.Seq;
+        lock (chat.Numbers)
+        {
+            chat.Seq = written.Seq;
+            if (reset) chat.ResetSeq = written.Seq;
+        }
         if (announce && next.Filled && events is { } sequence)
         {
             var changed = written.Put.ToHashSet(StringComparer.Ordinal);
@@ -1046,16 +1058,9 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     private static List<ChatMessage> Sorted(IEnumerable<ChatMessage> messages) =>
         messages.DistinctBy(message => message.Id).OrderBy(message => Position.Of(message)).ToList();
 
-    private static string Cursor(ChatMessage oldest) => CursorPrefix + oldest.Timestamp.UtcTicks.ToString(CultureInfo.InvariantCulture) + "|"
-        + Convert.ToBase64String(Encoding.UTF8.GetBytes(oldest.SortKey ?? "")) + "|" + Convert.ToBase64String(Encoding.UTF8.GetBytes(oldest.Id));
+    private static string Cursor(ChatMessage oldest) => HistoryPosition.Cursor(oldest);
 
-    private static Position? ReadCursor(string cursor)
-    {
-        var parts = cursor[CursorPrefix.Length..].Split('|');
-        if (parts.Length != 3 || !long.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var ticks)) return null;
-        try { return new Position(ticks, Encoding.UTF8.GetString(Convert.FromBase64String(parts[1])), Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]))); }
-        catch (FormatException) { return null; }
-    }
+    private static Position? ReadCursor(string cursor) => HistoryPosition.ReadCursor(cursor);
 
     private static string Service(string chatId) => chatId.IndexOf(':') is > 0 and var colon ? chatId[..colon] : chatId;
 
@@ -1066,17 +1071,6 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     private static long Ms(long clock) => (long)Stopwatch.GetElapsedTime(clock).TotalMilliseconds;
 
     private static byte[] Save(State state) => JsonSerializer.SerializeToUtf8Bytes(state);
-
-    /// <summary>Where a message sorts: its time, then its sort key, then its id (the order every copy uses).</summary>
-    internal readonly record struct Position(long Ticks, string SortKey, string Id) : IComparable<Position>
-    {
-        public static Position Of(ChatMessage message) => new(message.Timestamp.UtcTicks, message.SortKey ?? "", message.Id);
-
-        public int CompareTo(Position other) =>
-            Ticks != other.Ticks ? Ticks.CompareTo(other.Ticks)
-            : string.CompareOrdinal(SortKey, other.SortKey) is var sort and not 0 ? sort
-            : string.CompareOrdinal(Id, other.Id);
-    }
 
     /// <summary>
     /// A conversation as the copy holds it: whether it is filled, whether the service said it has nothing older, the service's cursor below the floor, the
@@ -1098,6 +1092,8 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         public volatile State State = State.Empty;
         public long Seq;
         public long ResetSeq;
+        // Seq and ResetSeq change together under this, so a sync reads them as one pair without waiting on Gate (held across a read of the service).
+        public object Numbers { get; } = new();
         public long RefreshedAt;
         // The list's newest activity when it was last checked against what is held (in memory: a restart checks each once more).
         public long SeenActivity;

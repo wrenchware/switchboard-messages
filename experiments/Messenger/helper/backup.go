@@ -491,7 +491,7 @@ func openExport(ctx context.Context, kept *messageStore, account string) (*backu
 	if info, err := os.Stat(path); err == nil {
 		size = info.Size()
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", sqliteFile(path, "_pragma=busy_timeout(5000)"))
 	if err != nil {
 		removeBackupSnapshot(path)
 		return nil, "backup_failed"

@@ -75,7 +75,7 @@ func (a *adapter) startEncrypted(ctx context.Context, restore bool) string {
 		}
 	}
 	logger := waLog.Logger(&secureLog{})
-	devices, err := sqlstore.New(ctx, "sqlite", "file:"+path+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)", logger)
+	devices, err := sqlstore.New(ctx, "sqlite", sqliteFile(path, "_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"), logger)
 	if err != nil {
 		logf("e2ee device store failed")
 		return "e2ee_store_failed"

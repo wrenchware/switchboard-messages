@@ -405,7 +405,7 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 
 - The last message you sent says how it's doing in words: "Sending…", "Sent", "Delivered" or "Read". Once a reply comes after it, the status goes if the message was delivered, and stays while it says "Sent".
 - Click any message you sent to show its status, and click again to put it away.
-- Turn off **Delivery status as text** in [Appearance](#settings-appearance) for icons instead: a clock while sending, one check sent, two checks delivered, two checks in your accent colour read. A red alert means failed, an amber question mark uncertain. "Not confirmed yet", "May not have sent" and "Edited" always show as words.
+- Turn off **Delivery status as text** in [Appearance](#settings-appearance) for icons instead: a clock while sending, one check sent, two checks delivered, two blue checks read. A red alert means failed, an amber question mark uncertain. "Not confirmed yet", "May not have sent" and "Edited" always show as words.
 - In groups, small **read faces** sit under the newest message each person has read, and slide down as they read on. Hover for "Read by …".
 - Receipts appear only where the service reports them. Google Voice shows "Sent"; SMS never reports Read.
 

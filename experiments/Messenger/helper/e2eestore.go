@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -93,11 +94,23 @@ func (m *messageStore) rememberAttachments(ctx context.Context, thread int64, me
 	m.rememberAttachmentsOn(ctx, m.db, thread, messageID, items, previews)
 }
 
+// A database file as the SQLite URI every store here is opened by. SQLite ends a URI's path at '?' or '#' and decodes
+// '%', so a folder name holding one of them (a Windows user name may) would quietly open or create another file.
+func sqliteFile(path, params string) string {
+	dsn := "file:" + sqlitePathEscaper.Replace(path)
+	if params != "" {
+		dsn += "?" + params
+	}
+	return dsn
+}
+
+var sqlitePathEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
+
 func openMessageStore(ctx context.Context, path string) (*messageStore, error) {
 	if path == "" {
 		return nil, errors.New("message store path is unavailable")
 	}
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", sqliteFile(path, "_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +856,7 @@ func (m *messageStore) absorb(ctx context.Context, path string, into *store) int
 	if m == nil || path == "" {
 		return 0
 	}
-	old, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	old, err := sql.Open("sqlite", sqliteFile(path, "_pragma=busy_timeout(5000)"))
 	if err != nil {
 		return 0
 	}

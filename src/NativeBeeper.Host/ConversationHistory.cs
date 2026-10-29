@@ -617,8 +617,9 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 var verified = Max(state.Verified, seen);
                 reached = verified.Equals(top);
                 joined = joined with { Newest = top, Verified = verified };
-                // Read further back than the floor while finding where the two meet: the floor moves down with it.
-                if (state.Floor is { } floor && Position.Of(gathered[0]).CompareTo(floor) < 0)
+                // Read further back than the floor while finding where the two meet: the floor moves down with it. One filled while it held nothing (a
+                // Messenger encrypted conversation this device has no messages of) takes its floor, and whether there is more, from this read.
+                if (state.Floor is not { } floor || Position.Of(gathered[0]).CompareTo(floor) < 0)
                     joined = joined with { Floor = Position.Of(gathered[0]), Cursor = more ? cursor : null, Complete = !more };
             }
             var written = await WriteAsync(chat, gathered, absent, joined).ConfigureAwait(false);

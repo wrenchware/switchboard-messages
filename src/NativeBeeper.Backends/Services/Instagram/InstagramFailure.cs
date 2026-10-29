@@ -135,6 +135,10 @@ internal static class InstagramRefusal
 
     private static string? CodeOf(Exception failure) => failure is InvalidOperationException ? failure.Message : null;
 
+    // A failure as a word fit for the log: the helper's own code when it is one, else the failure's type.
+    public static string LogCode(Exception failure) => CodeOf(failure) is { Length: > 0 and <= 40 } code && code.All(c => char.IsAsciiLetterLower(c) || c == '_')
+        ? code : failure.GetType().Name;
+
     public static SendException Send(Exception failure) =>
         new(!BeforeSending.Contains(CodeOf(failure) ?? ""), SendSentence(failure));
 

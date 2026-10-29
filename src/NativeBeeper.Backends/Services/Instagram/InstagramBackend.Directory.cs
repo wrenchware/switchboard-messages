@@ -28,7 +28,7 @@ internal sealed partial class InstagramBackend : IContactBackend, IDirectChatLoo
 
     public Task<ContactOptions> GetContactOptionsAsync(string accountId, CancellationToken cancellationToken = default)
         => Task.FromResult(identity is { } known && accountId == known.Account && IsConnected
-            ? new ContactOptions(true, true, "Search Instagram by name or handle. Instagram can only open a conversation you already share with someone, so the first message to somebody new has to come from Instagram itself.", RemoteSearch: true)
+            ? new ContactOptions(true, true, "Search Instagram by name or handle. Someone you have never written to gets a conversation when you send the first message from here.", RemoteSearch: true)
             : new ContactOptions(false, false, "Sign in to Instagram in Settings first."));
 
     public async Task<IReadOnlyList<ContactPerson>> FindContactsAsync(string accountId, string query, CancellationToken cancellationToken = default)
@@ -85,7 +85,12 @@ internal sealed partial class InstagramBackend : IContactBackend, IDirectChatLoo
         catch (OperationCanceledException) { throw; }
         // No conversation yet is not a dead end: Instagram will open one, but only once something has been said in it,
         // so New chat answers by asking for that message rather than by printing a refusal.
-        catch (Exception failure) { throw InstagramRefusal.Start(failure, contact.Name); }
+        catch (Exception failure)
+        {
+            InstagramLog.Write($"instagram start direct outcome={InstagramRefusal.LogCode(failure)}");
+            throw InstagramRefusal.Start(failure, contact.Name);
+        }
+        InstagramLog.Write("instagram start direct outcome=opened");
         var opened = result.Deserialize<InstagramChat>(Json)
             ?? throw new SendException(false, "Instagram did not describe that conversation. Refresh Instagram and try again.");
         return known.Map(Remember(opened));
@@ -115,11 +120,17 @@ internal sealed partial class InstagramBackend : IContactBackend, IDirectChatLoo
         catch (OperationCanceledException) { throw; }
         // Unlike opening a conversation, this one sends, so a failure whose outcome is unknown must say so: the
         // message may already be in somebody's conversation, and nothing here may offer to send it again.
-        catch (Exception failure) { throw InstagramRefusal.FirstMessage(failure); }
+        // Logged by its outcome alone, so the first live one says whether Instagram took the person's messaging id (PROVIDERS.md).
+        catch (Exception failure)
+        {
+            InstagramLog.Write($"instagram first message outcome=refused code={InstagramRefusal.LogCode(failure)}");
+            throw InstagramRefusal.FirstMessage(failure);
+        }
         // An answer that cannot be read is an unconfirmed send, not an error to try again: the message may have gone.
         InstagramStartedChat? sent;
         try { sent = result.Deserialize<InstagramStartedChat>(Json); }
         catch (JsonException) { sent = null; }
+        InstagramLog.Write($"instagram first message outcome={(sent is null || string.IsNullOrEmpty(sent.MessageId) ? "unconfirmed" : sent.Chat is null ? "sent_unshown" : "sent")}");
         if (sent is null || string.IsNullOrEmpty(sent.MessageId))
             throw new SendException(true, "Instagram did not confirm the message. Check Instagram before sending it again.");
         // The message went. A conversation Instagram would not describe afterwards is a drawing problem, not a

@@ -100,6 +100,9 @@ type adapter struct {
 	// Whether each conversation was read when last listed, so reading it elsewhere (the phone, the Voice website)
 	// updates it here too.
 	lastRead map[string]bool
+	// Conversations started from New chat that Google answered it has no thread for: their first message goes to the
+	// number (send.go). Held with mu.
+	unstarted map[string]bool
 	// The newest message time any listing has shown. A conversation change detection has not watched yet is announced
 	// only for messages newer than this, so old history is never announced as new. The first listing sets it; after
 	// that only change detection raises it, because a list the app reads between an arrival and the next detection
@@ -139,7 +142,7 @@ type adapter struct {
 
 func newAdapter(out *output) *adapter {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &adapter{out: out, lifetime: ctx, stop: cancel, lastSeen: map[string]int64{}, lastRead: map[string]bool{}, refresh: make(chan struct{}, 1)}
+	return &adapter{out: out, lifetime: ctx, stop: cancel, lastSeen: map[string]int64{}, lastRead: map[string]bool{}, unstarted: map[string]bool{}, refresh: make(chan struct{}, 1)}
 }
 
 func (a *adapter) current() *libgv.Client {
@@ -365,6 +368,7 @@ func (a *adapter) callContext(ctx context.Context, r request) (any, string) {
 			// A conversation started from New chat has no thread at Google until its first message is sent.
 			if status := statusOf(err); p.Before == "" && strings.HasPrefix(p.ChatID, "t.") && (status == http.StatusNotFound || status == http.StatusBadRequest) {
 				a.diagnose(map[string]any{"thread": "not_started", "status": status})
+				a.setUnstarted(p.ChatID, true)
 				return map[string]any{"messages": []voiceMessage{}, "next": ""}, ""
 			}
 			return nil, authCode(err)

@@ -136,3 +136,69 @@ func TestSendTextSendsOnceUnsignedAndNeverLogsTheText(t *testing.T) {
 		t.Fatal("expected libgv's client to start with the default transport")
 	}
 }
+
+func TestFirstMessageToANewNumberGoesToTheNumber(t *testing.T) {
+	sink := &capture{}
+	a := newAdapter(&output{encoder: json.NewEncoder(sink)})
+	defer a.stop()
+	a.client = libgv.NewClient(map[string]string{"SID": "synthetic"})
+	send := func(chat string) (any, string) {
+		return a.callContext(context.Background(), request{Method: "ui.sendText", Params: json.RawMessage(`{"chatId":"` + chat + `","text":"synthetic"}`)})
+	}
+	var sent []*gvproto.ReqSendSMS
+	refuseThreads := true
+	a.sendSMS = func(ctx context.Context, _ *libgv.Client, req *gvproto.ReqSendSMS) (*gvproto.RespSendSMS, error) {
+		sent = append(sent, req)
+		attempt := ctx.Value(sendAttemptKey{}).(*sendAttempt)
+		attempt.attempts = 1
+		if refuseThreads && req.GetThreadID() != "" {
+			attempt.status = 400
+			return nil, &libgv.ResponseError{Resp: &http.Response{StatusCode: 400}, Body: []byte(`[3,"INVALID_ARGUMENT"]`)}
+		}
+		attempt.status = 200
+		return &gvproto.RespSendSMS{ThreadItemID: "m1", TimestampMS: 1}, nil
+	}
+
+	// Known unstarted (its thread answered not found): one request, to the number, with no thread id.
+	a.setUnstarted("t.+15550100", true)
+	if _, code := send("t.+15550100"); code != "" || len(sent) != 1 || sent[0].GetThreadID() != "" ||
+		len(sent[0].GetRecipients()) != 1 || sent[0].GetRecipients()[0] != "+15550100" || sent[0].GetText() != "synthetic" {
+		t.Fatalf("an unstarted conversation's first message goes to its number: %q %+v", code, sent)
+	}
+	if a.isUnstarted("t.+15550100") {
+		t.Fatal("once sent, the conversation exists")
+	}
+
+	// Not known: the thread id first, and on Google's refusal once more to the number.
+	sent = nil
+	if _, code := send("t.+15550101"); code != "" || len(sent) != 2 || sent[0].GetThreadID() != "t.+15550101" || sent[1].GetThreadID() != "" ||
+		sent[1].GetRecipients()[0] != "+15550101" || sent[0].GetTransactionID().GetID() == sent[1].GetTransactionID().GetID() {
+		t.Fatalf("a refused first try goes once more to the number: %q %+v", code, sent)
+	}
+
+	// Anything but a one-to-one text conversation is never tried a second way.
+	sent = nil
+	if _, code := send("g.group"); code != "send_rejected" || len(sent) != 1 {
+		t.Fatalf("a refused group send is not tried again: %q %d", code, len(sent))
+	}
+
+	// Refused both ways: the second refusal stands, and Google's word for it is logged.
+	sent = nil
+	a.sendSMS = func(ctx context.Context, _ *libgv.Client, req *gvproto.ReqSendSMS) (*gvproto.RespSendSMS, error) {
+		sent = append(sent, req)
+		attempt := ctx.Value(sendAttemptKey{}).(*sendAttempt)
+		attempt.attempts, attempt.status = 1, 400
+		return nil, &libgv.ResponseError{Resp: &http.Response{StatusCode: 400}, Body: []byte(`{"error":{"code":400,"status":"FAILED_PRECONDITION"}}`)}
+	}
+	if _, code := send("t.+15550102"); code != "send_rejected" || len(sent) != 2 {
+		t.Fatalf("refused both ways is refused: %q %d", code, len(sent))
+	}
+	joined := strings.Join(sink.lines, "\n")
+	if !strings.Contains(joined, `"reason":"FAILED_PRECONDITION"`) || !strings.Contains(joined, `"shape":"recipients"`) || strings.Contains(joined, "synthetic") ||
+		strings.Contains(joined, "15550102") {
+		t.Fatalf("the refusal is named by Google's word alone: %s", joined)
+	}
+	if refusalReason(errors.New("plain")) != "none" || refusalReason(&libgv.ResponseError{Resp: &http.Response{StatusCode: 400}, Body: []byte("x")}) != "unnamed" {
+		t.Fatal("a refusal without Google's word says so")
+	}
+}

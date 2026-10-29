@@ -72,7 +72,7 @@ internal static class GoogleVoiceLog
     private static readonly HashSet<string> FieldNames = new(StringComparer.Ordinal) { "login", "status", "realtime", "refresh", "cookies", "added", "changed", "removed", "voicemails", "withMedia", "shape", "voicemail", "type", "kb",
         "send", "archived", "listExtra", "olderPage", "threads", "overlap", "nextToken", "replace", "recovery",
         "contactList", "listedNumbers", "lookedUp", "matched", "lookup", "unnamed", "named",
-        "direct", "directIdsMatch", "thread", "spam", "arrived", "newThreads", "delete" };
+        "direct", "directIdsMatch", "thread", "spam", "arrived", "newThreads", "delete", "reason" };
     public static string Fields(System.Text.Json.JsonElement data)
     {
         if (data.ValueKind != System.Text.Json.JsonValueKind.Object) return "diagnostic=invalid";

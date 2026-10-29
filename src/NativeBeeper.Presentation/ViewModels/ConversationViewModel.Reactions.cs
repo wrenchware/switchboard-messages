@@ -5,7 +5,9 @@ namespace NativeBeeper.Presentation.ViewModels;
 
 public sealed partial class ConversationViewModel
 {
-    private static readonly TimeSpan ReactionPredictionTimeout = TimeSpan.FromMinutes(1);
+    // How long a reaction shows before the service confirms it. The sample preview, with no service to confirm one, holds
+    // its predictions for as long as it runs (ShellNavigationProbe).
+    public static TimeSpan ReactionPredictionTimeout { get; set; } = TimeSpan.FromMinutes(1);
     private sealed record PendingReaction(string Key, bool Remove, IReadOnlyList<MessageReaction> Before, DateTimeOffset At);
     private readonly Dictionary<string, PendingReaction> pendingReactions = [];
 

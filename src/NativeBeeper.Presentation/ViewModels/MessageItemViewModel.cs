@@ -47,8 +47,12 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
     // "New messages" above the first message that was unread when the conversation was opened (ConversationViewModel.UnreadDivider).
     public bool ShowUnreadDivider { get; private set; }
     internal void SetUnreadDivider(bool value) => ShowUnreadDivider = value;
-    // Teams-style line above each group of messages: the time, with the sender's name in group chats.
+    // Teams-style line above a message: the sender's name in a group chat when the sender changes, and the time only after
+    // a gap of TimeGap or on a new day. A time over every turn read as clutter, five in three minutes (owner, 2026-10-29);
+    // each message's own time stays on hover.
     public bool ShowHeader { get; private set; }
+    public bool ShowTime { get; private set; }
+    public static readonly TimeSpan TimeGap = TimeSpan.FromMinutes(10);
     public string HeaderName { get; private set; }
     public bool HasHeaderName => HeaderName.Length > 0;
     public string SystemContext => IsSystem ? IsMergedSource ? Time : HasHeaderName ? HeaderName + " · " + Time : "" : "";
@@ -65,7 +69,7 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
     {
         PhotoGroupMessages = messages; IsPhotoGroupMember = hidden;
         if (hidden) return;
-        ShowDate = first.ShowDate; ShowHeader = first.ShowHeader; ContinuesGroup = first.ContinuesGroup;
+        ShowDate = first.ShowDate; ShowHeader = first.ShowHeader; ShowTime = first.ShowTime; ContinuesGroup = first.ContinuesGroup;
         if (members is null) return;
         // A set is one picture on screen, as Messenger's phone client shows it: every photo's reactions and every
         // reader's face appear under the set rather than on hidden member rows.
@@ -150,7 +154,7 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
         ReactionChips = value.ReactionChips;
         SenderAvatarUrl = value.SenderAvatarUrl; ReadBy = value.ReadBy; ShowLock = value.ShowLock;
         MediaReloadVersion = value.MediaReloadVersion;
-        ShowHeader = value.ShowHeader; HeaderName = value.HeaderName; ReceiptStage = value.ReceiptStage; ShowReceipt = value.ShowReceipt;
+        ShowHeader = value.ShowHeader; ShowTime = value.ShowTime; HeaderName = value.HeaderName; ReceiptStage = value.ReceiptStage; ShowReceipt = value.ShowReceipt;
         OnPropertyChanged(string.Empty);
     }
 
@@ -164,7 +168,7 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
         SourceChat.AccountId == other.SourceChat.AccountId && SourceChat.Title == other.SourceChat.Title && SourceChat.IsEncrypted == other.SourceChat.IsEncrypted &&
         Status == other.Status && Sender == other.Sender && SenderAvatarUrl == other.SenderAvatarUrl && Reply == other.Reply && ReplyAuthor == other.ReplyAuthor &&
         ShowDate == other.ShowDate && DateLabel == other.DateLabel && ShowUnreadDivider == other.ShowUnreadDivider && ShowSender == other.ShowSender && ContinuesGroup == other.ContinuesGroup &&
-        ShowHeader == other.ShowHeader && HeaderName == other.HeaderName && ReceiptStage == other.ReceiptStage && ShowReceipt == other.ShowReceipt &&
+        ShowHeader == other.ShowHeader && ShowTime == other.ShowTime && HeaderName == other.HeaderName && ReceiptStage == other.ReceiptStage && ShowReceipt == other.ShowReceipt &&
         // A reader's face moves from one message to another as they read on, which changes no other part of the row.
         ReadBy.SequenceEqual(other.ReadBy) && ShowLock == other.ShowLock && IsPhotoGroupMember == other.IsPhotoGroupMember &&
         PhotoGroupMessages.SequenceEqual(other.PhotoGroupMessages) && MediaReloadVersion == other.MediaReloadVersion;
@@ -188,8 +192,10 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
             NativeBeeper.Presentation.Services.EmojiText.IsShortEmojiOnly(NativeBeeper.Presentation.Services.MessageText.PlainText(message.Text ?? ""));
         Sender = message.IsOutgoing ? "You" : message.SenderName ?? chat.Participants.FirstOrDefault(p => p.Id == message.SenderId)?.DisplayName ?? "Unknown sender";
         ShowDate = previous is null || previous.Timestamp.LocalDateTime.Date != message.Timestamp.LocalDateTime.Date;
-        ShowHeader = !message.IsHidden && message.Type != "system" && (ShowDate || !ContinuesGroup);
+        var headed = !message.IsHidden && message.Type != "system";
+        ShowTime = headed && (ShowDate || message.Timestamp - previous!.Timestamp >= TimeGap);
         HeaderName = !message.IsOutgoing && chat.Type == "group" ? Sender : "";
+        ShowHeader = ShowTime || headed && HeaderName.Length > 0 && !ContinuesGroup;
         ShowSender = !message.IsOutgoing && (ShowDate || previous!.SenderId != message.SenderId || previous.IsOutgoing != message.IsOutgoing ||
             message.Timestamp - previous.Timestamp > TimeSpan.FromMinutes(5));
         var original = message.ReplyToId is not { } replyId ? null

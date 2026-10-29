@@ -384,7 +384,7 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 ### Reactions {#reactions}
 
 - **React** shows the service's emoji: Google Messages 👍 ❤️ 😂 😮 😢 👎, Messenger 👍 ❤️ 😆 😮 😢 😡 (one each, so a new one replaces yours), Instagram ❤️ 😂 😮 😢 😡 👍.
-- Reactions appear as chips under the message. Click a chip to add the same or remove yours; hover to see who reacted.
+- Reactions sit on the message's bottom corner, with a count when several people chose the same one. Click one to add the same or remove yours; hover to see who reacted.
 
 ### Deleting {#deleting}
 
@@ -395,7 +395,7 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 
 ### Layout {#layout}
 
-- Messages are grouped by sender, with times and a day divider ("Today", or the date). In groups each sender's name shows. Hover any message for its full time and status.
+- Messages are grouped by sender under a day divider ("Today", or the date), with a time above them after ten quiet minutes. In groups each sender's name shows. Hover any message for its time and status.
 - While you scroll, a **date pill** shows at the top and fades when you stop.
 - On Messenger and Instagram, a **New messages** line marks where you stopped reading when you opened the conversation. It disappears once you send. Google Messages and Voice don't say where you stopped, so they can't have one.
 - Links and email addresses are clickable; hover a link for its full address. Message text can be selected and copied.

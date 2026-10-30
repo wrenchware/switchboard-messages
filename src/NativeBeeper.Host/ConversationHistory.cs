@@ -272,7 +272,30 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     // ---- IMessageSender: sends go on; a resolve is the copy's when it holds the message ----
 
     public Task<SendPermission> GetSendPermissionAsync(string chatId, CancellationToken cancellationToken = default) => sender.GetSendPermissionAsync(chatId, cancellationToken);
-    public Task<SendReceipt> SendTextAsync(string chatId, string text, CancellationToken cancellationToken = default) => sender.SendTextAsync(chatId, text, cancellationToken);
+    public async Task<SendReceipt> SendTextAsync(string chatId, string text, CancellationToken cancellationToken = default)
+    {
+        var receipt = await sender.SendTextAsync(chatId, text, cancellationToken).ConfigureAwait(false);
+        ReadBackSent(chatId);
+        return receipt;
+    }
+
+    /// <summary>
+    /// How long after a send through this host to an Instagram conversation its newest page is read again. Instagram announces only what arrives, so a
+    /// message sent from here reached no copy: a client drawing from the copy lost its own reply (2026-10-30). The other services announce their own sends.
+    /// </summary>
+    public TimeSpan SentReadBack { get; init; } = TimeSpan.FromSeconds(1.5);
+
+    // Read as an open is, the person having just sent: one read of Instagram per send, and what it finds is announced as any find is.
+    private void ReadBackSent(string chatId)
+    {
+        if (!chatId.StartsWith(InstagramPrefix, StringComparison.Ordinal) || !held.TryGetValue(chatId, out var chat) || !chat.State.Filled) return;
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(SentReadBack, stop.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            Enqueue(chatId, Work.Open);
+        });
+    }
 
     // What is read here is never written from here: an answer can be a partial copy (Instagram's list words), and the copy takes messages only from pages
     // and the events' own reads.
@@ -345,8 +368,12 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     public bool HasLocalActionOptions => actions?.HasLocalActionOptions ?? false;
     public Task<MessageActionOptions> GetOptionsAsync(string chatId, string messageId, CancellationToken cancellationToken = default) =>
         (actions ?? throw new NotSupportedException()).GetOptionsAsync(chatId, messageId, cancellationToken);
-    public Task<SendReceipt> ReplyAsync(string chatId, string messageId, string text, CancellationToken cancellationToken = default) =>
-        (actions ?? throw new NotSupportedException()).ReplyAsync(chatId, messageId, text, cancellationToken);
+    public async Task<SendReceipt> ReplyAsync(string chatId, string messageId, string text, CancellationToken cancellationToken = default)
+    {
+        var receipt = await (actions ?? throw new NotSupportedException()).ReplyAsync(chatId, messageId, text, cancellationToken).ConfigureAwait(false);
+        ReadBackSent(chatId);
+        return receipt;
+    }
 
     public async Task ReactAsync(string chatId, string messageId, string reaction, bool remove, CancellationToken cancellationToken = default)
     {

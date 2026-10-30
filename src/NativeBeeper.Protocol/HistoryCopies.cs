@@ -128,9 +128,14 @@ public sealed class HistoryCopies
         {
             var under = Done(reader);
             if (older is null) { Count(ref forwarded); return null; }
-            // As the changes made while it was read say (an edit, a reaction, a removal of one of these), not as it was when read.
-            var read = Sorted(older.Messages.Where(message => HistoryPosition.Of(message).CompareTo(oldest) < 0)
-                .Select(message => under is not null && under.TryGetValue(message.Id, out var now) ? now : message).OfType<ChatMessage>());
+            // As the changes made while it was read say, not as it was when read: one edited or reacted to, one removed, and one put in among these (a
+            // message the server took in between two of them would otherwise never be read again: its change is past the copy's revision; review, 2026-10-30).
+            var answered = older.Messages.Where(message => HistoryPosition.Of(message).CompareTo(oldest) < 0).ToList();
+            var low = older.More && answered.Count > 0 ? answered.Select(HistoryPosition.Of).Min() : (HistoryPosition?)null;
+            var added = under?.Values.OfType<ChatMessage>().Where(message => HistoryPosition.Of(message).CompareTo(oldest) < 0
+                && (low is not { } floor || HistoryPosition.Of(message).CompareTo(floor) >= 0)) ?? [];
+            var read = Sorted(answered.Select(message => under is not null && under.TryGetValue(message.Id, out var now) ? now : message).OfType<ChatMessage>()
+                .Concat(added));
             // The copy's own rows as they are now, where it still ends where the read began.
             if (copies.GetValueOrDefault(chatId) is { Messages.Count: > 0 } same && ReferenceEquals(same, reader) && HistoryPosition.Of(same.Messages[0]).Equals(oldest))
                 below = Before(same.Messages, before);
@@ -270,6 +275,7 @@ public sealed class HistoryCopies
                         if (elapsed.Elapsed < SettleTrust) copy.MarksSettled = Math.Max(copy.MarksSettled, marks);
                     }
                     foreach (var change in waiting ?? []) Apply(copy, change);
+                    Hollow(copy);
                 }
             }
             done.TrySetResult(result is not null);
@@ -301,8 +307,13 @@ public sealed class HistoryCopies
         lock (gate)
         {
             if (!copies.TryGetValue(change.ChatId, out var copy)) return;
-            // Asked meanwhile: it waits for the answer, which says where it begins.
-            if (copy.Sync is not null) { (copy.Held ??= []).Add(change); return; }
+            // Asked meanwhile: it waits for the answer, which says where it begins. An older read under way learns of it now, not after it has answered.
+            if (copy.Sync is not null)
+            {
+                Note(copy, change.Messages, change.Removed);
+                (copy.Held ??= []).Add(change);
+                return;
+            }
             Apply(copy, change);
         }
     }
@@ -318,6 +329,7 @@ public sealed class HistoryCopies
             Trim(copy);
             copy.Revision = change.To;
             applied++;
+            Hollow(copy);
             return;
         }
         // A change it cannot follow from where it is: it asks for what it missed at its next read.
@@ -334,6 +346,15 @@ public sealed class HistoryCopies
             foreach (var (chatId, copy) in copies)
                 if (change.Affects(chatId)) copy.Marks++;
         }
+    }
+
+    // Every message it held went (removed on the service) while more lie before them: nothing is left to read on from, so it starts again from the
+    // newest rather than serve an empty page that says there is more (review, 2026-10-30). Caller holds the gate.
+    private static void Hollow(Copy copy)
+    {
+        if (copy.Messages.Count > 0 || !copy.MoreOlder) return;
+        copy.Current = false;
+        copy.Revision = "";
     }
 
     private void Unsettle()

@@ -194,13 +194,20 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             {
                 var messages = changed.Where(row => !row.Removed).Select(Message).OfType<ChatMessage>().ToArray();
                 var removed = changed.Where(row => row.Removed).Select(row => row.MessageId).ToArray();
-                answer = new(revision, false, messages, removed, MoreOlder: true, state.Complete);
+                // A reset written while these were read took the messages it replaced away with no row to say so: what was read is no patch then, and the
+                // answer starts the copy over instead (review, 2026-10-30).
+                bool crossed;
+                lock (chat.Numbers) crossed = chat.ResetSeq != resetSeq;
+                if (!crossed) answer = new(revision, false, messages, removed, MoreOlder: true, state.Complete);
             }
         }
         if (answer is null)
         {
+            // Numbers first again: what is read after them is at least as new.
+            lock (chat.Numbers) seq = chat.Seq;
+            state = chat.State;
             var newest = await NewestAsync(chat.ChatId, state, limit, cancellationToken).ConfigureAwait(false);
-            answer = new(revision, true, newest.Messages, [], newest.More, state.Complete);
+            answer = new(Revision(seq), true, newest.Messages, [], newest.More, state.Complete);
         }
         // A sync is how a client of 24 opens a conversation (and reads its newest after an event), so it is read again behind the answer when stale, as a
         // newest page is: otherwise a conversation the service changed without an event stays as it was until the walk. Queued after the answer, so the

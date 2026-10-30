@@ -78,6 +78,14 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     public TimeSpan WalkEvery { get; init; } = TimeSpan.FromMinutes(30);
     /// <summary>A conversation opened after this long without a read of its newest page has it read again behind the answer.</summary>
     public TimeSpan OpenRefreshAfter { get; init; } = TimeSpan.FromMinutes(10);
+    /// <summary>
+    /// The most stale conversations a minute that syncs have read again. A sync is how a client of 24 opens a conversation, but also how a phone catches up
+    /// on every copy it keeps: after a restart (every conversation suspect) one catch-up's 1,700 syncs queued 500 reads of the services (2026-10-30).
+    /// </summary>
+    public int SyncRefreshesPerMinute { get; init; } = 6;
+    private readonly object syncRefreshGate = new();
+    private long syncRefreshMinute;
+    private int syncRefreshes;
     /// <summary>When a change made through this host is read back, in case its service sends no event for it.</summary>
     public IReadOnlyList<TimeSpan> ConfirmAfter { get; init; } = [TimeSpan.FromSeconds(1.5), TimeSpan.FromSeconds(6)];
     /// <summary>A held message this young is not taken as gone for missing from a page: the service's page may not have it yet.</summary>
@@ -196,8 +204,9 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         }
         // A sync is how a client of 24 opens a conversation (and reads its newest after an event), so it is read again behind the answer when stale, as a
         // newest page is: otherwise a conversation the service changed without an event stays as it was until the walk. Queued after the answer, so the
-        // read cannot take Gate ahead of the events this sync waited for.
-        if (Stale(chat)) Enqueue(request.ChatId, Work.Open);
+        // read cannot take Gate ahead of the events this sync waited for. A sync cannot say it is an open rather than a catch-up, so these are few a minute,
+        // and never Instagram's: a read nobody asked for is not one to make there.
+        if (Stale(chat) && !request.ChatId.StartsWith(InstagramPrefix, StringComparison.Ordinal) && TakeSyncRefresh()) Enqueue(request.ChatId, Work.Open);
         return answer;
     }
 
@@ -902,6 +911,16 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             }
         }
         return written;
+    }
+
+    private bool TakeSyncRefresh()
+    {
+        var minute = Environment.TickCount64 / 60_000;
+        lock (syncRefreshGate)
+        {
+            if (minute != syncRefreshMinute) (syncRefreshMinute, syncRefreshes) = (minute, 0);
+            return ++syncRefreshes <= SyncRefreshesPerMinute;
+        }
     }
 
     private bool Stale(Held chat)

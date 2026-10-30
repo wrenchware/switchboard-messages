@@ -121,6 +121,12 @@ internal sealed class NetworkHost : IAsyncDisposable
     /// <summary>The server's pushes as they are now, for the harness; null on a host started without them.</summary>
     internal PushSwitch? Pushes { get; private set; }
 
+    /// <summary>How the server's pushes are doing (10.9), for the harness; null on a host started without them.</summary>
+    internal PushHealth? PushHealth { get; private set; }
+
+    /// <summary>Each device's push address and reports of a missing app, for the harness; null on a host started without them.</summary>
+    internal PushRegistry? PushRegistrations { get; private set; }
+
     /// <summary>Raised with a device's id once it has been removed.</summary>
     internal event Action<string>? DeviceRevoked { add => devices.Revoked += value; remove => devices.Revoked -= value; }
 
@@ -223,13 +229,15 @@ internal sealed class NetworkHost : IAsyncDisposable
         var pushes = await PushRegistry.LoadAsync(options.DataFolder, options.Protector, options.Log, devices.Has).ConfigureAwait(false);
         // Pushes as they are now: on from the start with the folder's files, or turned on later from the server's page.
         var pushSwitch = new PushSwitch(options.Push, options.PushFolder, options.Log, options.PushHandler);
+        // How they are doing, for the page's card and push.status (10.9).
+        var health = new PushHealth(options.Time, options.Log);
         var presence = new DevicePresence();
         var host = await StartAsync(admitted =>
         {
             var dispatcher = new ProtocolDispatcher(admitted.Channel, services with
             {
                 Devices = admitted.Devices,
-                Push = new DevicePush(() => pushSwitch.Current, pushes, admitted.DeviceId),
+                Push = new DevicePush(() => pushSwitch.Current, pushes, admitted.DeviceId, health, () => devices.List(null), options.Time),
                 ClientState = presence.For(admitted.DeviceId, services.ClientState),
             }, version, served, options.Log, journal);
             admitted.BeginDraining = dispatcher.BeginDraining;
@@ -238,13 +246,30 @@ internal sealed class NetworkHost : IAsyncDisposable
             var run = dispatcher.Start();
             _ = run.ContinueWith(_ => presence.Closed(dispatcher), TaskScheduler.Default);
             return run;
-        }, version, options, cancellationToken, served.Flush, services.Admin, services.Logs, devices, new ServerPage.Pushes(pushSwitch, pushes), services.WholeHistory).ConfigureAwait(false);
-        host.DeviceRevoked += device => _ = pushes.RemoveAsync(device, "device_removed");
+        }, version, options, cancellationToken, served.Flush, services.Admin, services.Logs, devices, new ServerPage.Pushes(pushSwitch, pushes, health), services.WholeHistory).ConfigureAwait(false);
+        host.DeviceRevoked += device =>
+        {
+            _ = pushes.RemoveAsync(device, "device_removed");
+            health.Forget(device);
+        };
         host.Pushes = pushSwitch;
-        // Another project's files: every phone's address was the old project's, so each is forgotten and signs up again at its next connection.
+        host.PushHealth = health;
+        host.PushRegistrations = pushes;
+        // Another project's files: every phone's address was the old project's, so each is forgotten and signs up again (at once when it is open: below).
         pushSwitch.ProjectChanged += changedAt =>
         {
             foreach (var registration in pushes.All().Where(registration => registration.At < changedAt)) _ = pushes.RemoveAsync(registration.DeviceId, "project_changed", registration.Token);
+        };
+        // Pushes turned on, or the files replaced (10.9): the reports of a missing app were about the old files, and every open phone of 27 or later is told to ask
+        // for the offer again, so it signs up now rather than at its next connection.
+        pushSwitch.Installed += () =>
+        {
+            _ = pushes.ClearMissingAsync();
+            if (services.Events is { } announced)
+            {
+                announced.AppendSignal(new AccountSignal(AccountSignals.Push));
+                options.Log("push announced");
+            }
         };
         if (services.Events is { } events && services.Chats is { } chats && services.Sender is { } sender)
         {
@@ -254,7 +279,7 @@ internal sealed class NetworkHost : IAsyncDisposable
             void Start()
             {
                 if (Interlocked.Exchange(ref started, 1) == 0) host.Own(notifier = new PushNotifier(events, chats, sender, pushes, pushSwitch, presence.InFront, options.Log, services.SharedState,
-                    quietFor: presence.AtAnotherDevice));
+                    quietFor: presence.AtAnotherDevice, health: health));
             }
             // Two days without a good backup (stage 10): every phone signed up for notifications is told; with none, nobody is, and the backup asks again later.
             if (options.Backups?.Service is { } backup) backup.StaleNotice = _ => Task.FromResult(notifier?.BackupStale() > 0);

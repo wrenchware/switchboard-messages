@@ -189,7 +189,8 @@ public sealed partial class ProtocolDispatcher(IFrameChannel channel, ProtocolSe
                 // A change to the whole history goes only to a connection of 24 or later; below, its place counts as sent (stage 8).
                 // The backup signal (protocol 26) likewise: an older client was never told the word.
                 if (item.History is not null && negotiated < ProtocolVersion.WholeHistory || item.Row is not null && negotiated < ProtocolVersion.Feed
-                    || item.Signal is { Name: AccountSignals.Backup } && negotiated < ProtocolVersion.ServerBackup)
+                    || item.Signal is { Name: AccountSignals.Backup } && negotiated < ProtocolVersion.ServerBackup
+                    || item.Signal is { Name: AccountSignals.Push } && negotiated < ProtocolVersion.PushTest)
                 {
                     sent.Advance(item.Seq);
                     continue;

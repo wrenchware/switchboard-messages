@@ -53,8 +53,8 @@ internal sealed partial class ServerPage
     /// <summary>The most the notifications form may send: its two files and the password.</summary>
     public const int MaxUpload = 2 * PushSwitch.MaxFile + 4096;
 
-    /// <summary>The server's pushes as the page shows and sets them up: the switch they go through, and which devices have signed up for them.</summary>
-    internal sealed record Pushes(PushSwitch Switch, PushRegistry Registry);
+    /// <summary>The server's pushes as the page shows and sets them up: the switch they go through, which devices have signed up for them, and how they are doing.</summary>
+    internal sealed record Pushes(PushSwitch Switch, PushRegistry Registry, PushHealth Health);
 
     /// <summary>The most of the server's log the page shows: its end.</summary>
     public const int LogTail = 64 * 1024;
@@ -271,7 +271,7 @@ internal sealed partial class ServerPage
 
     /// <summary>Whether a request is one of the page's (any other path stays the door's 404).</summary>
     public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push"
-        or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path);
+        or "/push/test" or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path);
 
     /// <summary>The page's logo, shown before signing in too (it is the app's own icon, nothing of the server's).</summary>
     public const string LogoPath = "/logo.png";
@@ -309,7 +309,7 @@ internal sealed partial class ServerPage
             await response.Body.WriteAsync(bytes, context.RequestAborted).ConfigureAwait(false);
             return;
         }
-        if (!get && !post || get && path is "/logout" or "/joins/deny" or "/joins/pause" or "/mirror" || post && path is "/" or "/log" or LogoPath)
+        if (!get && !post || get && path is "/logout" or "/joins/deny" or "/joins/pause" or "/mirror" or "/push/test" || post && path is "/" or "/log" or LogoPath)
         {
             await PlainAsync(context, StatusCodes.Status405MethodNotAllowed, "Not here.").ConfigureAwait(false);
             return;
@@ -422,7 +422,10 @@ internal sealed partial class ServerPage
             case "/push" when pushes is not null:
                 await PushAsync(context, form, token, pushes).ConfigureAwait(false);
                 return;
-            case "/push":
+            case "/push/test" when pushes is not null:
+                await PushTestAsync(context, form!, pushes).ConfigureAwait(false);
+                return;
+            case "/push" or "/push/test":
                 Redirect(response, "/");
                 return;
             case { } walkthrough when IsSetupPath(walkthrough):
@@ -678,8 +681,8 @@ internal sealed partial class ServerPage
             "joined" => "The device joined. It can use the server now.",
             "declined" => "The request was turned away.",
             "join_gone" => "That request isn't waiting any more: it was answered, it ran out, or the device stopped asking.",
-            "push_on" => "Notifications are on. A phone starts getting them the next time Messages on it connects.",
-            "push_on_unchecked" => "Notifications are on, but the server couldn't reach Google to check the key just now. If none arrive, add the files again.",
+            "push_on" => "Notifications are on. Phones with Messages open sign up now, the others when Messages on them next connects. Send a test below to be sure.",
+            "push_on_unchecked" => "Notifications are on, but the server couldn't reach Google to check the key just now. Send a test below; if it doesn't arrive, add the files again.",
             "mirror" => "Checking now. Each service takes a few seconds per conversation; reload to see the results.",
             "backup_started" => "Backing up now. Reload in a minute to see it done.",
             "backup_busy" => "A backup is already running, or there's no password yet.",
@@ -731,7 +734,7 @@ internal sealed partial class ServerPage
         body.Append("</section>");
 
         if (tailnet is not null) TailnetCard(body, tailnet, token);
-        if (pushes is not null) PushCard(body, pushes);
+        if (pushes is not null) PushCard(body, pushes, token);
 
         body.Append("<section id=\"accounts\"><h2>Accounts</h2>");
         IReadOnlyList<ServerAccount>? accounts = null;
@@ -779,95 +782,9 @@ internal sealed partial class ServerPage
         // The AGPL offer to everyone who uses the server over the network: the source of the commit this image was built from (Core SourceCode).
         body.Append("<footer><a href=\"/log\">Recent log</a><a href=\"").Append(Html(SourceCode.For(status?.App, status?.Revision)))
             .Append("\" target=\"_blank\" rel=\"noopener noreferrer\">Source code</a>").Append(Form("/logout", token, "Sign out", quiet: true)).Append("</footer>");
-        // Every 5 seconds while the server waits to be signed in to Tailscale, so the card moves on as soon as it has been.
+        // Every 5 seconds while the server waits to be signed in to Tailscale, so the card moves on as soon as it has been; every 2 while a test push is waited on.
         return (body.ToString(), status is null ? null : "Running for " + Span(time.GetUtcNow() - status.Started),
-            waiting.Count > 0 ? 10 : TailnetWaiting ? 5 : 30);
-    }
-
-    // ---- Notifications on phones (SWITCHBOARD.md 7.5): the owner's Firebase project given here rather than put in a folder by hand ----
-
-    private const string FirebaseConsole = "https://console.firebase.google.com/";
-
-    // Off: what notifications are and how to get the two files, step by step, then the form. On: the project they go through, and which phones have signed up.
-    private void PushCard(StringBuilder body, Pushes card)
-    {
-        body.Append("<section id=\"push\"><h2>Notifications on phones</h2>");
-        if (card.Switch.Current is not { } setup)
-        {
-            body.Append(Para("Messages on a phone can show new messages as notifications. They go through a Firebase project of your own, so no one else's service is in between, and each is sealed for your phone: Google carries it without being able to read it."))
-                .Append("<ol class=\"steps\">")
-                .Append("<li><a href=\"").Append(FirebaseConsole).Append("\" target=\"_blank\" rel=\"noopener noreferrer\">Open Firebase</a> and create a project with your Google account. It's free, and Google Analytics isn't needed.</li>")
-                .Append("<li>Add an Android app to the project with the package name <span class=\"copy\">com.wrenchware.messages.dev</span>. You can skip the steps after it's registered.</li>")
-                .Append("<li>In Project settings, under General, download <strong>google-services.json</strong>.</li>")
-                .Append("<li>In Project settings, under Service accounts, choose <strong>Generate new private key</strong>. That file is a secret: give it only to this server.</li>")
-                .Append("</ol>")
-                .Append("<form method=\"get\" action=\"/push\"><button type=\"submit\">Add the two files…</button></form></section>");
-            return;
-        }
-        var names = devices.List(null).ToDictionary(device => device.Id, device => device.Name, StringComparer.Ordinal);
-        var phones = card.Registry.All().Where(registration => card.Registry.Paired(registration.DeviceId))
-            .Select(registration => names.TryGetValue(registration.DeviceId, out var name) ? name : null).OfType<string>().Order(StringComparer.CurrentCulture).ToList();
-        body.Append("<ul class=\"rows\">");
-        Step(body, true, "On", $"Through your Firebase project {setup.Offer.ProjectId}.");
-        if (phones.Count > 0) Step(body, true, phones.Count == 1 ? "1 phone gets them" : $"{phones.Count} phones get them", string.Join(", ", phones) + ".");
-        else Step(body, false, "No phone yet", "Open Messages on your phone once: it signs up by itself when it connects.");
-        body.Append("</ul><form method=\"get\" action=\"/push\"><button type=\"submit\" class=\"quiet\">Replace the files…</button></form></section>");
-    }
-
-    // The form (a GET), then the files with the password itself: whoever holds the key decides where every notification goes.
-    private async Task PushAsync(HttpContext context, IFormCollection? form, string token, Pushes card)
-    {
-        var replacing = card.Switch.Current is not null;
-        string Ask(string? problem)
-        {
-            var body = new StringBuilder("<section>");
-            if (problem is not null) body.Append(Notice(problem));
-            body.Append(Para(replacing
-                ? "Choose the two files from your Firebase project. They replace the ones the server has now, at once."
-                : "Choose the two files from your Firebase project. Notifications start at once; nothing needs restarting."));
-            body.Append("<form method=\"post\" action=\"/push\" enctype=\"multipart/form-data\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">")
-                .Append("<label for=\"settings\">google-services.json</label><input id=\"settings\" name=\"settings\" type=\"file\" accept=\".json,application/json\" required>")
-                .Append("<label for=\"account\">Private key (from Service accounts)</label><input id=\"account\" name=\"account\" type=\"file\" accept=\".json,application/json\" required>")
-                .Append("<label for=\"password\">The server's password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
-                .Append("<button type=\"submit\">").Append(replacing ? "Replace the files" : "Turn on notifications").Append("</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
-            return body.Append("</section>").ToString();
-        }
-        const string title = "Notifications on phones";
-        if (form is null)
-        {
-            await PageAsync(context, StatusCodes.Status200OK, title, Ask(null)).ConfigureAwait(false);
-            return;
-        }
-        if (!await PasswordAgainAsync(context, form, "push", title, Ask).ConfigureAwait(false)) return;
-        async Task<string?> TextOf(string name)
-        {
-            if (form.Files.GetFile(name) is not { Length: > 0 and <= PushSwitch.MaxFile } file) return null;
-            using var reader = new StreamReader(file.OpenReadStream(), Encoding.UTF8);
-            return await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
-        }
-        var (settings, account) = (await TextOf("settings").ConfigureAwait(false), await TextOf("account").ConfigureAwait(false));
-        if (settings is null || account is null)
-        {
-            await PageAsync(context, StatusCodes.Status400BadRequest, title, Ask("Choose both files: google-services.json and the private key.")).ConfigureAwait(false);
-            return;
-        }
-        var outcome = await card.Switch.InstallAsync(settings, account, context.RequestAborted).ConfigureAwait(false);
-        var problem = outcome switch
-        {
-            PushInstall.NotAppSettings => "The first file isn't google-services.json from Firebase. It's in Project settings, under General, beside your Android app.",
-            PushInstall.NotServiceAccount => "The second file isn't a private key from Firebase. Make one in Project settings, under Service accounts, with Generate new private key.",
-            PushInstall.ProjectsDiffer => "The two files are from different Firebase projects. Use both from the same project.",
-            PushInstall.NoApp => "google-services.json has no Android app for Messages. Add one with the package name com.wrenchware.messages.dev, then download the file again.",
-            PushInstall.KeyRefused => "Google didn't accept the private key: it may have been deleted. Make a new one in Service accounts and try again.",
-            PushInstall.NotSaved => "The server couldn't keep the files, so nothing was changed. Try again.",
-            _ => null,
-        };
-        if (problem is not null)
-        {
-            await PageAsync(context, outcome == PushInstall.NotSaved ? StatusCodes.Status500InternalServerError : StatusCodes.Status400BadRequest, title, Ask(problem)).ConfigureAwait(false);
-            return;
-        }
-        Redirect(context.Response, outcome == PushInstall.On ? "/?done=push_on" : "/?done=push_on_unchecked");
+            pushes?.Health.Test is { State: PushTestState.Waiting } ? 2 : waiting.Count > 0 ? 10 : TailnetWaiting ? 5 : 30);
     }
 
     // One line of the card: done or to do, its words, and what to do it with.
@@ -1062,6 +979,7 @@ internal sealed partial class ServerPage
         + ".copy.block{display:block;margin:6px 0 0;overflow-wrap:anywhere}.grow>a.button,.grow>.copy.block{align-self:flex-start}.grow>pre{margin:8px 0 6px}a.button.small{font-size:13px;padding:3px 10px;margin-top:6px}"
         // The notifications card's steps and form.
         + "ol.steps{margin:0 0 12px;padding-left:22px}ol.steps li{margin:0 0 6px}input[type=file]{font:inherit;display:block;margin:0 0 12px;max-width:100%}"
+        + PushStyle
         // The restore's choice of file, the reset's typed word, and the review's devices.
         + "select,input#word{font:inherit;padding:6px 8px;width:100%;max-width:360px;box-sizing:border-box;margin:0 0 12px;display:block}label.grow{cursor:pointer}"
         + "@media(max-width:520px){header{flex-wrap:wrap}h1{white-space:nowrap}ul.rows li{flex-wrap:wrap}.attention .grow,#tailnet .grow{flex-basis:100%}}";
@@ -1090,12 +1008,13 @@ internal sealed partial class ServerPage
         response.ContentLength = 0;
     }
 
-    // What every answer carries: nothing cached or framed, no script at all, forms only to this page, and the connection closed after it.
+    // What every answer carries: nothing cached or framed, no script but the notifications card's own few lines (allowed by their hash alone, so nothing put into a
+    // page could run), forms only to this page, and the connection closed after it.
     private static void Secure(HttpResponse response)
     {
         var headers = response.Headers;
         headers.CacheControl = "no-store";
-        headers.ContentSecurityPolicy = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+        headers.ContentSecurityPolicy = $"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src '{PushScriptHash}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
         headers.XFrameOptions = "DENY";
         headers.XContentTypeOptions = "nosniff";
         // same-origin, not no-referrer: under no-referrer a browser sends a form post with Origin: null, which the origin check above refuses (checked in Chromium,

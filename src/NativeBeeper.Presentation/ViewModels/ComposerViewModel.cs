@@ -88,6 +88,9 @@ public sealed partial class ComposerViewModel : ObservableObject, INoticeSource,
     public bool HasRejectedMessage => CanRestore();
     // Sends this conversation still had open when the app last closed, which no lookup has since confirmed.
     public bool HasInterruptedSend => chatId is not null && interruptedSends?.ForChat(chatId).Count > 0;
+    public string InterruptedSendTitle => InterruptedSendTitleOf(chatId is null || interruptedSends is null ? [] : interruptedSends.ForChat(chatId));
+    public static string InterruptedSendTitleOf(IReadOnlyList<InterruptedSend> sends) =>
+        sends.Count > 0 && sends.All(send => send.OnServer && send.Refused) ? (sends.Count == 1 ? "Message not sent" : "Messages not sent") : "Message may not have sent";
     public string InterruptedSendText => InterruptedSendTextOf(chatId is null || interruptedSends is null ? [] : interruptedSends.ForChat(chatId));
     public static string InterruptedSendTextOf(IReadOnlyList<InterruptedSend> sends)
     {
@@ -96,6 +99,11 @@ public sealed partial class ComposerViewModel : ObservableObject, INoticeSource,
         if (sends.Count > 0 && sends.All(send => send.OnServer))
         {
             var kind = sends.All(send => send.Scheduled) ? "scheduled message" : "message";
+            // A send its service refused went nowhere; saying it may have gone made a plain refusal read as a doubt (owner's screenshot, 2026-10-29).
+            if (sends.All(send => send.Refused))
+                return sends.Count == 1
+                    ? $"A {kind} sent {SentWhen(sends[0].CreatedAt)} was turned down by its service, so nothing was sent. You can send it again."
+                    : $"{sends.Count} {kind}s were turned down by their service, so nothing was sent. You can send them again.";
             return sends.Count == 1
                 ? $"A {kind} sent {SentWhen(sends[0].CreatedAt)} may not have gone through. Check the conversation before sending it again."
                 : $"{sends.Count} {kind}s may not have gone through. Check the conversation before sending them again.";
@@ -122,7 +130,7 @@ public sealed partial class ComposerViewModel : ObservableObject, INoticeSource,
     {
         RestoreRejectedCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(HasRejectedMessage));
-        OnPropertyChanged(nameof(HasInterruptedSend)); OnPropertyChanged(nameof(InterruptedSendText));
+        OnPropertyChanged(nameof(HasInterruptedSend)); OnPropertyChanged(nameof(InterruptedSendText)); OnPropertyChanged(nameof(InterruptedSendTitle));
     }
     public string LengthHint => Text.Length > maxLength ? $"Message exceeds this conversation's {maxLength:N0} character limit." : "";
     partial void OnTextChanged(string value)

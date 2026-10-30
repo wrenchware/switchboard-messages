@@ -12,7 +12,9 @@ public sealed record InterruptedSend(string LocalId, string ChatId, DateTimeOffs
     // Kept by a server for a send it made on a client's behalf (a scheduled one, or any device's ordinary send): shown as the server's, and dismissed on the server for every device (outbox.dismiss). Never stored on this PC.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool OnServer = false,
     // A server's record of a scheduled message it fired (SharedUnsettledSend.ScheduledId), as against an ordinary send from this or another device: only these are worded "scheduled".
-    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Scheduled = false);
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Scheduled = false,
+    // A server's record of a send its service refused (UnsettledStates.Failed): certainly not sent, as against one whose outcome is unknown.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] bool Refused = false);
 
 // Remembers sends whose outcome was still open when the app closed, so the next launch can say so instead of silently
 // forgetting them. It never sends anything: each carried send gets one lookup, and one the provider knows is dropped;
@@ -180,7 +182,8 @@ public sealed class InterruptedSends : IDisposable
         if (host is null) return;
         // Not ConfigureAwait(false): Changed below redraws the interface, so it is raised on the thread that asked (the dispatcher's, from RefreshHostQuietAsync).
         var read = (await host.ReadUnsettledAsync())
-            .Select(row => new InterruptedSend("server:" + row.OperationId, row.ChatId, row.CreatedAt, null, null, null, row.OperationId, OnServer: true, Scheduled: row.ScheduledId is not null)).ToList();
+            .Select(row => new InterruptedSend("server:" + row.OperationId, row.ChatId, row.CreatedAt, null, null, null, row.OperationId, OnServer: true, Scheduled: row.ScheduledId is not null,
+                Refused: row.State == UnsettledStates.Failed)).ToList();
         hostLoaded = true;
         var before = hostRows;
         hostRows = read;

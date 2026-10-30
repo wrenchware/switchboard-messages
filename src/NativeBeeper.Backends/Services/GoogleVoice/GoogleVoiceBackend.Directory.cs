@@ -88,7 +88,7 @@ internal sealed partial class GoogleVoiceBackend : IDirectChatLookup
         if (FindDirectChat(contact) is { } existing) return Task.FromResult(existing);
         if (!accounts.Accounts.Any(account => account.Key == key && account.IsConnected))
             return Task.FromException<ChatSummary>(new SendException(false, "Connect this Google Voice account in Settings first."));
-        var person = new ChatParticipant(GoogleVoiceModels.Qualify(key, "person:" + number), string.IsNullOrWhiteSpace(contact.Name) ? number : contact.Name,
+        var person = new ChatParticipant(GoogleVoiceModels.Qualify(key, "person:" + number), string.IsNullOrWhiteSpace(contact.Name) ? GoogleVoiceModels.Shown(number) : contact.Name,
             contact.AvatarUrl, Phone: number);
         var chat = new ChatSummary(GoogleVoiceModels.Qualify(key, "t." + number), contact.AccountId, person.DisplayName, GoogleVoiceModels.Network,
             "single", null, 0, false, false, false, false, contact.AvatarUrl, null, [], null, null, GoogleVoiceModels.Capabilities, [person], 1);

@@ -31,6 +31,9 @@ internal static class GoogleVoiceModels
     public static (string Key, string Id)? ParseMedia(string? value) => GoogleVoiceIds.Parse(value, MediaPrefix);
     public static string? AccountKey(string? accountId) => GoogleVoiceIds.AccountKey(accountId);
     public static string? Number(string? input) => GoogleVoiceIds.Number(input);
+
+    // Someone with no name is shown by number as every other service shows one, (860) 555-0147, not as Voice writes it (+18605550147).
+    public static string Shown(string number) => NativeBeeper.Presentation.Services.ConversationHeaderText.Phone(number) ?? number;
     public static ChatSummary? TextRouteForCall(ChatSummary call) => GoogleVoiceIds.TextRouteForCall(call);
 
     // The Voice helper derives this opaque value from the provider's contact-photo URL and keeps the URL inside its
@@ -59,7 +62,7 @@ internal static class GoogleVoiceModels
     {
         var self = Number(accountNumber);
         var participants = (chat.Participants ?? []).Select(person =>
-            new ChatParticipant(Qualify(key, "person:" + person.Number), string.IsNullOrWhiteSpace(person.Name) ? person.Number : person.Name!,
+            new ChatParticipant(Qualify(key, "person:" + person.Number), string.IsNullOrWhiteSpace(person.Name) ? Shown(person.Number) : person.Name!,
                 AvatarForContact(key, person.Avatar), self is not null && Number(person.Number) == self, person.Number)).ToArray();
         // Who the conversation is actually with. A thread that lists this account as well is still a conversation with
         // one person, and its own picture is that person's: counting the account in made it a group of two, which drew
@@ -73,7 +76,7 @@ internal static class GoogleVoiceModels
         // The helper names a thread after everyone in it. Where that included this account, the name is the people it
         // is with, so a conversation with one person is not titled after two.
         var title = others.Length > 0 && others.Length != participants.Length
-            ? string.Join(", ", others.Select(person => person.DisplayName)) : chat.Title;
+            ? string.Join(", ", others.Select(person => person.DisplayName)) : Number(chat.Title) is not null ? Shown(chat.Title) : chat.Title;
         return new(Qualify(key, chat.Id), Account(key), string.IsNullOrWhiteSpace(title) ? "Google Voice conversation" : title,
             Network, group ? "group" : "single", at, chat.Unread && chat.Preview?.Outgoing != true ? 1 : 0,
             false, false, chat.Archived, false, avatar, preview, [], null, null, Capabilities, participants, participants.Length,

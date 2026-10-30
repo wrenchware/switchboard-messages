@@ -121,12 +121,18 @@ internal static class AppPaths
     // virtualized for a packaged desktop app, so without a tag of its own a Store copy would find the unpackaged install's lock and refuse
     // to start beside it.
     public static string InstanceSuffix { get; } = (Override is { } given ? Path.TrimEndingDirectorySeparator(given).ToUpperInvariant()
-            : PackageFamily is { } family ? "PACKAGE:" + family.ToUpperInvariant() : null) is not { } tagged ? ""
-        : "." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(tagged)))[..12];
+            : PackageFamily is { } family ? "PACKAGE:" + family.ToUpperInvariant() : null) is not { } tagged ? "" : Tag(tagged);
+
+    private static string Tag(string tagged) =>
+        "." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(tagged)))[..12];
 
     // The mutex the window holds for its whole run (Program.Main). MessagesServer.exe looks for it until the window takes the host lease itself
     // (SWITCHBOARD.md 3.2), so that a server never opens the stores and providers of a data root the window is using.
     public static string AppDataLockName => @"Local\NativeBeeper.Data" + InstanceSuffix;
+    // The same lock of the copy started with folder as its NATIVEBEEPER_DATA_ROOT: how a sample's leftover folder is told from one a
+    // sample still running holds (SampleMode).
+    public static string DataLockNameFor(string folder) =>
+        @"Local\NativeBeeper.Data" + Tag(Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)).ToUpperInvariant());
     // Held by a running MessagesServer.exe for this data root (ServerShell). The app looks for it before it believes a held host lease means a server.
     public static string ServerLockName => @"Local\Messages.Server" + InstanceSuffix;
 }

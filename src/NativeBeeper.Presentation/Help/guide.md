@@ -384,7 +384,7 @@ Hover a message for a small toolbar: **Reply**, **React**, **Save photo** (when 
 ### Reactions {#reactions}
 
 - **React** shows the service's emoji: Google Messages 👍 ❤️ 😂 😮 😢 👎, Messenger 👍 ❤️ 😆 😮 😢 😡 (one each, so a new one replaces yours), Instagram ❤️ 😂 😮 😢 😡 👍.
-- Reactions sit on the message's bottom corner, with a count when several people chose the same one. Click one to add the same or remove yours; hover to see who reacted.
+- Each reaction sits in a small round badge on the message's bottom corner, with a count when several people chose the same one. Click one to add the same or remove yours; hover to see who reacted.
 
 ### Deleting {#deleting}
 

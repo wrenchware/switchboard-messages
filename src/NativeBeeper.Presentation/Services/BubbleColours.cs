@@ -83,6 +83,12 @@ public static class BubbleColours
 
     public static Rgba Incoming(bool dark) => dark ? new(48, 48, 48) : new(213, 213, 213);
 
+    // A reaction's round badge on a message's corner, as Google Messages draws one (owner, 2026-10-30): the incoming
+    // bubble taken a tenth of the way to its own ink, so the badge stands a step farther from the conversation than the
+    // bubble does (lighter in dark, darker in light) and shows where it overlaps either side's bubble. Google's is tone
+    // 22 on a tone-12 bubble; a tenth is that step on ours.
+    public static Rgba ReactionBadge(Rgba incoming) => CardTinting.Mix(Ink(incoming.Opaque), incoming.Opaque, .1);
+
     // Google messages follow their own reported route; a pending one carries its expected route until the phone reports
     // the real one. The other services have one colour each. A linked conversation either keeps each message's service
     // colour or, when that is turned off, draws every outgoing message in the one neutral colour. A service this table

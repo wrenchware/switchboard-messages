@@ -22,8 +22,22 @@ namespace NativeBeeper.Host.Network;
 /// Where the line carrying the code goes, when that is not the log: the Linux host prints it to the container's output only, so the log file on the data
 /// volume never holds a live code (it gets <c>server pairing code issued expires_s=600</c> instead).
 /// </param>
-internal sealed class PairingCodes(TimeProvider time, Action<string> log, Action<string>? show = null)
+/// <param name="setup">
+/// The page's one-time setup code (SWITCHBOARD.md 10.4) rather than a pairing code: the same shape and pacing, good for <see cref="SetupLifetime"/>, printed as
+/// <c>server setup code=XXXXX-XXXXX expires_s=</c> and logged as <c>server setup_code issued</c> (a word install scripts do not take for the code).
+/// </param>
+internal sealed class PairingCodes(TimeProvider time, Action<string> log, Action<string>? show = null, bool setup = false)
 {
+    /// <summary>How long a setup code is good for: a day, so one printed at the install is still good when the page is first opened.</summary>
+    public static readonly TimeSpan SetupLifetime = TimeSpan.FromDays(1);
+
+    private readonly TimeSpan life = setup ? SetupLifetime : Lifetime;
+    private readonly string shownWords = setup ? "server setup code" : "server pairing code";
+    private readonly string loggedWords = setup ? "server setup_code" : "server pairing code";
+
+    /// <summary>How long this code is good for once issued.</summary>
+    public TimeSpan CodeLifetime => life;
+
     public const string Alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
     public const int Length = 10;
     public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
@@ -59,6 +73,15 @@ internal sealed class PairingCodes(TimeProvider time, Action<string> log, Action
         }
     }
 
+    /// <summary>When the open code stops working; null when none is open.</summary>
+    public DateTimeOffset? Expires
+    {
+        get
+        {
+            lock (gate) return code is not null && time.GetUtcNow() < expires ? expires : null;
+        }
+    }
+
     /// <summary>Opens a new code in place of any other, prints it, and returns it as printed.</summary>
     public string Issue()
     {
@@ -67,15 +90,15 @@ internal sealed class PairingCodes(TimeProvider time, Action<string> log, Action
         lock (gate)
         {
             code = Encoding.ASCII.GetBytes(chars);
-            expires = time.GetUtcNow() + Lifetime;
+            expires = time.GetUtcNow() + life;
         }
         var shown = Display(chars);
-        var line = $"server pairing code={shown} expires_s={(int)Lifetime.TotalSeconds}";
+        var line = $"{shownWords}={shown} expires_s={(int)life.TotalSeconds}";
         if (show is null) log(line);
         else
         {
             show(line);
-            log($"server pairing code issued expires_s={(int)Lifetime.TotalSeconds}");
+            log($"{loggedWords} issued expires_s={(int)life.TotalSeconds}");
         }
         return shown;
     }
@@ -98,7 +121,7 @@ internal sealed class PairingCodes(TimeProvider time, Action<string> log, Action
             if (now >= expires)
             {
                 code = null;
-                log("server pairing code closed reason=expired");
+                log($"{loggedWords} closed reason=expired");
                 return null;
             }
             var from = Remember(Key(source), now);
@@ -114,7 +137,7 @@ internal sealed class PairingCodes(TimeProvider time, Action<string> log, Action
             {
                 var taken = code;
                 code = null;
-                log("server pairing code closed reason=taken");
+                log($"{loggedWords} closed reason=taken");
                 return taken;
             }
             from.Wrong++;

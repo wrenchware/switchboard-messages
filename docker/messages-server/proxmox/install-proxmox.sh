@@ -353,7 +353,7 @@ for _ in $(seq 1 60); do
     sleep 1
 done
 log=$(in_ct sh -c 'journalctl -u messages-server --no-pager -o cat 2>/dev/null' || true)
-setup=$(printf '%s\n' "$log" | grep -iE 'setup code' | tail -n 1 || true)
+setup=$(printf '%s\n' "$log" | sed -n 's/.*server setup code=\([^ ]*\).*/\1/p' | tail -n 1)
 pairing=$(printf '%s\n' "$log" | sed -n 's/.*server pairing code=\([^ ]*\).*/\1/p' | tail -n 1)
 fingerprint=$(printf '%s\n' "$log" | sed -n 's/.*server tls fingerprint sha256=\([0-9a-f]*\).*/\1/p' | tail -n 1)
 login=$(printf '%s\n' "$log" | sed -n 's/.*tailnet login url=\([^ ]*\).*/\1/p' | tail -n 1)

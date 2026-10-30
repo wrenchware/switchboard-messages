@@ -118,7 +118,7 @@ public static class Program
             // A restore or a reset chosen on the server's page (SWITCHBOARD.md stage 10) is applied here, before anything opens a store, and a half-finished one is finished or
             // swept. Refused while any service is signed in here.
             if (deferRestore) AppLog.Write("server restore deferred reason=backup_running");
-            else if (!ApplyRestore(backups, protector, options)) { code = 4; break; }
+            else if (!ApplyRestore(backups, protector, options, string.IsNullOrEmpty(pagePassword))) { code = 4; break; }
             var run = new LinuxServerRun(root, keys, options, AppLog.Write, previousExit, google);
             Volatile.Write(ref current, run);
             if (Volatile.Read(ref signalled) == 1) run.RequestStop("signal");
@@ -148,7 +148,8 @@ public static class Program
     // The restore or reset waiting for this start, if any. A signed-in service refuses a restore: a session is never restored beside one in use. The files say what is
     // signed in, since nothing is open yet.
     // False: a restore's moves were begun and not finished, and the server must not open on half of them (the next start finishes them).
-    private static bool ApplyRestore(NativeBeeper.Host.Backup.ServerBackupPaths paths, FileKeyStateProtector protector, LinuxServerOptions options)
+    // pagePasswordFromBackup: the page's password hash comes back from the backup only when this server has none in its environment (SWITCHBOARD.md 10.4).
+    private static bool ApplyRestore(NativeBeeper.Host.Backup.ServerBackupPaths paths, FileKeyStateProtector protector, LinuxServerOptions options, bool pagePasswordFromBackup)
     {
         if (!NativeBeeper.Host.Backup.ServerRestore.Planned(paths) && !NativeBeeper.Host.Backup.ServerRestore.ResetPlanned(paths)) return true;
         var keep = new HashSet<string>(StringComparer.Ordinal)
@@ -158,7 +159,7 @@ public static class Program
         try
         {
             NativeBeeper.Host.Backup.ServerRestore.ApplyPendingAsync(paths, protector, options.Backups(Directory.Exists), SignedIn, AppLog.Write, keep: keep,
-                signedInForReset: SignedInForReset).GetAwaiter().GetResult();
+                signedInForReset: SignedInForReset, restorePagePassword: pagePasswordFromBackup).GetAwaiter().GetResult();
         }
         catch (Exception failure)
         {

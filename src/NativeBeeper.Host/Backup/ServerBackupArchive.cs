@@ -29,10 +29,11 @@ internal sealed record BackupArchiveKey(string Profile, byte[] Key);
 
 /// <summary>
 /// The server's identity as a backup carries it (D8): its certificate and key, its devices (with the generation the list had), each phone's push address, the
-/// Firebase project's two files, whether requests to join are paused, the key its shared state is filed under, and the backup's own settings. Never a sign-in.
+/// Firebase project's two files, whether requests to join are paused, the key its shared state is filed under, the backup's own settings, and the hash of the
+/// password its page's first run chose (10.4; absent from a backup made before it, or of a server whose password is in its environment). Never a sign-in.
 /// </summary>
 internal sealed record ServerIdentityPart(string? Certificate, string? CertificateKey, long DevicesGeneration, List<BackupDevice> Devices, JsonElement? Push,
-    string? FirebaseSettings, string? FirebaseAccount, bool JoinPaused, string? SpaceKey, BackupSettingsPart? Backup);
+    string? FirebaseSettings, string? FirebaseAccount, bool JoinPaused, string? SpaceKey, BackupSettingsPart? Backup, string? PagePassword = null);
 
 /// <summary>The backup's own settings worth keeping across a restore: on or off, and the tag its file names carry, so the restored server goes on pruning its own.</summary>
 internal sealed record BackupSettingsPart(bool Enabled, string? Install, Dictionary<string, string>? MessengerKept);

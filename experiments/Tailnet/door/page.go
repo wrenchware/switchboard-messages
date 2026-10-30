@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,32 +39,41 @@ type pageView struct {
 	Rules  string `json:"rules,omitempty"`
 	Others   int  `json:"others,omitempty"`
 	Everyone bool `json:"everyone,omitempty"`
+	// Whether Tailscale signed this node out after it had been signed in (its key expired, or it was logged out), so the page says "Sign in again".
+	SignedOut bool `json:"signedOut,omitempty"`
+	// The owner's Messages phones on the tailnet (nodes named messages-…, other than a server), each with its key expiry, for the page's checklist.
+	Phones []phoneView `json:"phones,omitempty"`
+	// How many people's devices the tailnet holds (tagged devices belong to nobody): 1 when only the owner's, where Tailscale's default rule reaches only theirs.
+	Users int `json:"users,omitempty"`
 }
 
-// view reads what the page shows. A part that cannot be read now is left as it is unknown, never guessed.
-func (d *door) view(ctx context.Context, status *ipnstate.Status, port int) pageView {
+// phoneView is one Messages phone as the page lists it.
+type phoneView struct {
+	Name    string `json:"name"`
+	Address string `json:"address,omitempty"`
+	Expiry  string `json:"expiry,omitempty"`
+}
+
+// view reads what the page shows. A part that cannot be read now is left as it is unknown, never guessed. signedIn says the node was signed in earlier
+// in this run, so a sign-in it needs now is a sign-in again.
+func (d *door) view(ctx context.Context, status *ipnstate.Status, port int, signedIn bool) pageView {
 	v := pageView{State: word(status.BackendState), Login: status.AuthURL, Lock: "unknown", Rules: "unknown"}
 	self := status.Self
-	if self == nil || status.BackendState != "Running" {
+	if status.BackendState == "NeedsLogin" {
+		v.SignedOut = signedIn || self != nil && self.KeyExpiry != nil && self.KeyExpiry.Before(time.Now())
+	}
+	if self == nil || status.BackendState != "Running" && status.BackendState != "NeedsMachineAuth" {
 		return v
 	}
-	v.Name = strings.SplitN(strings.TrimSuffix(self.DNSName, "."), ".", 2)[0]
-	v.DNSName = strings.TrimSuffix(self.DNSName, ".")
-	for _, ip := range self.TailscaleIPs {
-		if ip.Is4() {
-			v.Address = ip.String()
-			break
-		}
+	describe(&v, self)
+	if status.BackendState != "Running" {
+		// Waiting for the tailnet's admin to approve it: its name and address are enough to find it in the console.
+		return v
 	}
 	if profile, ok := status.User[self.UserID]; ok {
 		v.Owner = profile.LoginName
 	}
-	v.Tagged = self.Tags != nil && self.Tags.Len() > 0
-	if self.KeyExpiry == nil {
-		v.Expiry = "off"
-	} else {
-		v.Expiry = self.KeyExpiry.UTC().Format(time.RFC3339)
-	}
+	v.Phones, v.Users = phones(status)
 	if lock, err := d.client.NetworkLockStatus(ctx); err == nil {
 		switch {
 		case !lock.Enabled:
@@ -94,6 +104,65 @@ func (d *door) view(ctx context.Context, status *ipnstate.Status, port int) page
 		v.Rules, v.Others, v.Everyone = reach(rules, mine, port, owned)
 	}
 	return v
+}
+
+// describe fills in what is the node's own: its names, its first IPv4 address, whether it is tagged and its key expiry.
+func describe(v *pageView, self *ipnstate.PeerStatus) {
+	v.Name = strings.SplitN(strings.TrimSuffix(self.DNSName, "."), ".", 2)[0]
+	v.DNSName = strings.TrimSuffix(self.DNSName, ".")
+	v.Address = firstV4(self.TailscaleIPs)
+	v.Tagged = self.Tags != nil && self.Tags.Len() > 0
+	if self.KeyExpiry == nil {
+		v.Expiry = "off"
+	} else {
+		v.Expiry = self.KeyExpiry.UTC().Format(time.RFC3339)
+	}
+}
+
+func firstV4(ips []netip.Addr) string {
+	for _, ip := range ips {
+		if ip.Is4() {
+			return ip.String()
+		}
+	}
+	return ""
+}
+
+// phonePrefix is how a Messages phone names its node on the tailnet (the app's Tailscale node, 7.4); a server is messages-server, or another name the
+// owner gave it, and is never listed as a phone.
+const phonePrefix = "messages-"
+
+// phones lists the owner's Messages phones among the peers, by name, and counts the people whose devices the tailnet holds.
+func phones(status *ipnstate.Status) ([]phoneView, int) {
+	self := status.Self
+	users := map[tailcfg.UserID]bool{}
+	if self.Tags == nil || self.Tags.Len() == 0 {
+		users[self.UserID] = true
+	}
+	var found []phoneView
+	for _, peer := range status.Peer {
+		if peer == nil {
+			continue
+		}
+		tagged := peer.Tags != nil && peer.Tags.Len() > 0
+		if !tagged {
+			users[peer.UserID] = true
+		}
+		name := strings.SplitN(strings.TrimSuffix(peer.DNSName, "."), ".", 2)[0]
+		if name == "" {
+			name = strings.ToLower(peer.HostName)
+		}
+		if tagged || peer.UserID != self.UserID || !strings.HasPrefix(name, phonePrefix) || strings.HasPrefix(name, "messages-server") {
+			continue
+		}
+		phone := phoneView{Name: name, Address: firstV4(peer.TailscaleIPs), Expiry: "off"}
+		if peer.KeyExpiry != nil {
+			phone.Expiry = peer.KeyExpiry.UTC().Format(time.RFC3339)
+		}
+		found = append(found, phone)
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Name < found[j].Name })
+	return found, len(users)
 }
 
 func (v pageView) line() string {

@@ -64,6 +64,19 @@ internal sealed record NetworkHostOptions(string DataFolder, IStateProtector Pro
     public string? PagePassword { get; init; }
 
     /// <summary>
+    /// The server's first run (SWITCHBOARD.md 10.4): with no <see cref="PagePassword"/>, the page is on all the same, set up by a one-time setup code printed where
+    /// <see cref="ShowCode"/> prints, then a password chosen on it and kept as a hash with the keys. Off (the harness's hosts, the sample server) leaves the page off
+    /// without a password, as before.
+    /// </summary>
+    public bool FirstRun { get; init; }
+
+    /// <summary>Whether an address counts as the home network for the page and asking to join; <see cref="ServerPage.FromHome(System.Net.IPAddress?)"/> unless a check says otherwise.</summary>
+    internal Func<System.Net.IPAddress?, bool>? HomeCheck { get; init; }
+
+    /// <summary>What "Fix it for me" calls Tailscale's API through: the harness's stand-in for it; null for the network.</summary>
+    internal HttpMessageHandler? TailscaleHandler { get; init; }
+
+    /// <summary>
     /// A Unix socket for the server's door on the owner's tailnet (<see cref="TailnetRelay"/>, SWITCHBOARD.md 4.7): a second listener with the same TLS, door and
     /// routes as the port, whose connections each begin with a PROXY line naming the tailnet device. Null, the default, opens none. Its folder is made private and
     /// a socket left there removed (<see cref="TailnetRelay.Prepare"/>).

@@ -62,7 +62,8 @@ internal sealed partial class ServerPage
     // Sign-ins that keep failing wait as pairing codes do: free for a few, then doubling to PairingCodes.LongestWait; every source waits a moment after any wrong one.
     private const int MaxSources = 1024;
 
-    private readonly byte[] credential;
+    // What sign-ins are made with: a MAC of the password given in the environment, or of the stored hash (ServerPage.Setup.cs). Changed once, when first run sets it.
+    private volatile byte[] credential;
     private volatile byte[] sessionKey;
     private readonly byte[] secret;
     private readonly DeviceRegistry devices;
@@ -81,22 +82,27 @@ internal sealed partial class ServerPage
     private readonly string keysFolder;
     private long generation;
     private readonly object signingOut = new();
-    private readonly string passwordCheck;
+    private volatile string passwordCheck;
     private int wrongTries, pacedTries;
 
     private readonly IWholeHistory? history;
     private readonly ServerPageBackups? backups;
 
-    private ServerPage(string password, byte[] secret, string keysFolder, long generation, string passwordCheck, DeviceRegistry devices, PairingCodes pairing, JoinRequests joins,
-        Func<string> fingerprint, IServerAdmin? admin, IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet, Pushes? pushes, IWholeHistory? history,
-        ServerPageBackups? backups)
+    // credential is the environment's password (MAC), or null with the stored one (stored) or with none yet (first run, setting up).
+    private ServerPage(byte[]? credential, StoredPassword? stored, byte[] secret, string keysFolder, long generation, string passwordCheck, DeviceRegistry devices, PairingCodes pairing,
+        JoinRequests joins, Func<string> fingerprint, IServerAdmin? admin, IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet, Pushes? pushes,
+        IWholeHistory? history, ServerPageBackups? backups, ServerPageSetup? setup)
     {
         this.history = history;
         this.backups = backups;
         this.keysFolder = keysFolder; this.generation = generation; this.passwordCheck = passwordCheck; this.joins = joins;
         this.secret = secret; this.devices = devices; this.pairing = pairing; this.fingerprint = fingerprint; this.admin = admin; this.logs = logs; this.time = time; this.log = log;
         this.tailnet = tailnet; this.pushes = pushes?.Switch.Folder is null ? null : pushes;
-        credential = Mac(secret, "password|" + password);
+        this.stored = stored;
+        this.setup = setup;
+        tailscale = setup?.Tailscale;
+        this.credential = credential ?? (stored is not null ? StoredCredential(secret, stored) : RandomNumberGenerator.GetBytes(32));
+        settingUp = credential is null && stored is null;
         sessionKey = SessionKey(generation);
     }
 
@@ -106,11 +112,28 @@ internal sealed partial class ServerPage
     /// or <c>key</c> (its key cannot be kept). Turned off, or on with another password than last time, it ends every sign-in made before.
     /// A transition that cannot keep that invalidation refuses startup rather than let an earlier password revive old sign-ins on a later restart.
     /// </summary>
+    /// <para>
+    /// With <paramref name="setup"/> (the server's first run, SWITCHBOARD.md 10.4) and no password in the environment, the page is on all the same: with the password the
+    /// owner chose on it, kept as a slow hash with the keys (<see cref="StoredPassword"/>, <c>server page on password=stored</c>), or, before one is chosen, as a setup screen
+    /// that takes a one-time setup code printed to the container's output (<c>server page setup</c>). A password in the environment always wins.
+    /// </para>
     public static ServerPage? Create(string? password, string keysFolder, DeviceRegistry devices, PairingCodes pairing, JoinRequests joins, Func<string> fingerprint, IServerAdmin? admin,
-        IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet = null, Pushes? pushes = null, IWholeHistory? history = null, ServerPageBackups? backups = null)
+        IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet = null, Pushes? pushes = null, IWholeHistory? history = null, ServerPageBackups? backups = null,
+        ServerPageSetup? setup = null)
     {
         var stateFile = Path.Combine(keysFolder, SignedOutFile);
-        var refusal = string.IsNullOrEmpty(password) ? "no_password"
+        StoredPassword? stored = null;
+        if (string.IsNullOrEmpty(password) && setup is not null)
+        {
+            try { stored = StoredPassword.Read(Path.Combine(keysFolder, StoredPassword.FileName)); }
+            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                // Never taken for "none": anyone who could damage the file would otherwise get the setup screen.
+                log($"server page off reason=stored_password type={failure.GetType().Name}");
+                return null;
+            }
+        }
+        var refusal = string.IsNullOrEmpty(password) ? setup is null ? "no_password" : null
             : password.Length < MinimumPassword ? $"short_password minimum={MinimumPassword}"
             : Encoding.UTF8.GetByteCount(password) > MaximumPasswordBytes ? $"long_password maximum={MaximumPasswordBytes}"
             : UnraidWouldChange(password) ? "changed_by_unraid" : null;
@@ -131,13 +154,18 @@ internal sealed partial class ServerPage
         }
         // The count kept from before the start (none yet is 0). One that cannot be read is a new random count; another password than the one it was last on, or the page
         // having been off, the next count: either way every earlier sign-in is void.
-        var check = Convert.ToHexStringLower(Mac(secret, "check|" + password))[..16];
+        // Setting up, there is no sign-in to keep: the page counts as off, so whatever sign-ins an earlier password made stay void.
+        var fromEnvironment = !string.IsNullOrEmpty(password);
+        var check = fromEnvironment ? Convert.ToHexStringLower(Mac(secret, "check|" + password))[..16] : stored is not null ? StoredCheck(secret, stored) : OffWord;
         var (signOuts, lastCheck) = ReadState(stateFile);
         if (signOuts < 0) signOuts = RandomNumberGenerator.GetInt32(1, int.MaxValue);
         else if (lastCheck is not null && lastCheck != check) signOuts++;
         if (lastCheck != check) KeepStartupState(stateFile, signOuts, check, log);
-        log("server page on");
-        return new ServerPage(password!, secret, keysFolder, signOuts, check, devices, pairing, joins, fingerprint, admin, logs, time, log, tailnet, pushes, history, backups);
+        log(fromEnvironment ? "server page on" : stored is not null ? "server page on password=stored" : "server page setup");
+        var page = new ServerPage(fromEnvironment ? Mac(secret, "password|" + password) : null, stored, secret, keysFolder, signOuts, check, devices, pairing, joins, fingerprint,
+            admin, logs, time, log, tailnet, pushes, history, backups, setup);
+        page.OpenSetup();
+        return page;
     }
 
     /// <summary>
@@ -243,7 +271,7 @@ internal sealed partial class ServerPage
 
     /// <summary>Whether a request is one of the page's (any other path stays the door's 404).</summary>
     public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push"
-        or "/mirror" or LogoPath || IsBackupPath(path);
+        or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path);
 
     /// <summary>The page's logo, shown before signing in too (it is the app's own icon, nothing of the server's).</summary>
     public const string LogoPath = "/logo.png";
@@ -315,6 +343,9 @@ internal sealed partial class ServerPage
             }
         }
 
+        // The server's first run (ServerPage.Setup.cs): until a password is chosen, the setup screen is all the page shows.
+        if (await FirstRunAsync(context, path, form).ConfigureAwait(false)) return;
+
         if (path == "/login")
         {
             if (session is not null) { Redirect(response, "/"); return; }
@@ -352,12 +383,12 @@ internal sealed partial class ServerPage
                 // A code lets a device read everything: the password itself is asked for, not only the sign-in a copied cookie would be.
                 if (get)
                 {
-                    await PageAsync(context, StatusCodes.Status200OK, "New pairing code", AskBody("/pair", token, PairAsk, "Make the code", null)).ConfigureAwait(false);
+                    await PageAsync(context, StatusCodes.Status200OK, "Add a PC", AskBody("/pair", token, PairAsk, "Show the line", null)).ConfigureAwait(false);
                     return;
                 }
-                if (!await PasswordAgainAsync(context, form!, "pair", "New pairing code", problem => AskBody("/pair", token, PairAsk, "Make the code", problem)).ConfigureAwait(false)) return;
+                if (!await PasswordAgainAsync(context, form!, "pair", "Add a PC", problem => AskBody("/pair", token, PairAsk, "Show the line", problem)).ConfigureAwait(false)) return;
                 var code = pairing.Issue();
-                await PageAsync(context, StatusCodes.Status200OK, "New pairing code", PairBody(request, code)).ConfigureAwait(false);
+                await PageAsync(context, StatusCodes.Status200OK, "Add a PC", PairBody(request, code)).ConfigureAwait(false);
                 return;
             case "/devices/remove":
                 await RemoveDeviceAsync(context, get ? request.Query["id"].ToString() : form!["id"].ToString(), form, token).ConfigureAwait(false);
@@ -393,6 +424,12 @@ internal sealed partial class ServerPage
                 return;
             case "/push":
                 Redirect(response, "/");
+                return;
+            case { } walkthrough when IsSetupPath(walkthrough):
+                await WalkthroughAsync(context, walkthrough, form, token).ConfigureAwait(false);
+                return;
+            case { } door when IsTailnetPath(door):
+                await TailnetAsync(context, door, form, token).ConfigureAwait(false);
                 return;
             case "/backups" when backups is not null && post:
                 await BackupsAsync(context, form!).ConfigureAwait(false);
@@ -441,7 +478,7 @@ internal sealed partial class ServerPage
             nextAnywhere = claimed = now + PairingCodes.GlobalSpacing;
         }
         // Too soon was not looked at, so a guess made then told nothing; this one is.
-        var right = CryptographicOperations.FixedTimeEquals(Mac(secret, "password|" + presented), credential);
+        var right = !settingUp && (stored is { } kept ? kept.Verify(presented) : CryptographicOperations.FixedTimeEquals(Mac(secret, "password|" + presented), credential));
         lock (gate)
         {
             if (right)
@@ -648,9 +685,10 @@ internal sealed partial class ServerPage
             "backup_busy" => "A backup is already running, or there's no password yet.",
             "backup_checking" => "Reading the latest backup back now. Reload in a minute to see what it found.",
             "backup_password" => "The backup password is set. Keep it safe: without it the backups can't be read.",
-            _ => null,
+            _ => TailnetNotice(done),
         };
         if (said is not null) body.Append(Notice(said));
+        await ChecklistAsync(body, token, cancellationToken).ConfigureAwait(false);
 
         var waiting = joins.Waiting();
         body.Append("<section><h2>Requests to join</h2>")
@@ -692,10 +730,10 @@ internal sealed partial class ServerPage
         if (status is null) body.Append(Para("The server couldn't say what it is just now."));
         body.Append("</section>");
 
-        if (tailnet is not null) TailnetCard(body, tailnet);
+        if (tailnet is not null) TailnetCard(body, tailnet, token);
         if (pushes is not null) PushCard(body, pushes);
 
-        body.Append("<section><h2>Accounts</h2>");
+        body.Append("<section id=\"accounts\"><h2>Accounts</h2>");
         IReadOnlyList<ServerAccount>? accounts = null;
         if (admin is not null)
             try { accounts = await admin.AccountsAsync(cancellationToken).ConfigureAwait(false); }
@@ -731,9 +769,9 @@ internal sealed partial class ServerPage
                     .Append("<a class=\"quiet\" href=\"/devices/remove?id=").Append(Uri.EscapeDataString(device.Id)).Append("\">Remove</a></li>");
             body.Append("</ul>");
         }
-        body.Append("<p class=\"quiet\">To add a device, ask to join from it: in Messages, Settings, Messages Server, with this server's address. Or make a pairing code for it.</p>");
-        // A page that asks for the password first (a GET, so nothing is done by following it).
-        body.Append("<form method=\"get\" action=\"/pair\"><button type=\"submit\" class=\"quiet\">Make a pairing code</button></form>");
+        body.Append("<p class=\"quiet\">A phone scans a code from Add a phone. A PC pastes a line from Add a PC, or asks to join: in Messages, Settings, Messages Server, with this server's address.</p>");
+        // Pages that ask for the password first (a GET, so nothing is done by following them).
+        body.Append("<p class=\"actions\"><a class=\"button\" href=\"/phone\">Add a phone…</a> <a class=\"button quiet\" href=\"/pair\">Add a PC…</a></p>");
         body.Append("</section>");
 
         if (backups is not null) ResetCard(body);
@@ -743,93 +781,7 @@ internal sealed partial class ServerPage
             .Append("\" target=\"_blank\" rel=\"noopener noreferrer\">Source code</a>").Append(Form("/logout", token, "Sign out", quiet: true)).Append("</footer>");
         // Every 5 seconds while the server waits to be signed in to Tailscale, so the card moves on as soon as it has been.
         return (body.ToString(), status is null ? null : "Running for " + Span(time.GetUtcNow() - status.Started),
-            waiting.Count > 0 ? 10 : tailnet?.Latest?.NeedsLogin == true || tailnet is { Enabled: true, Latest: null } ? 5 : 30);
-    }
-
-    // ---- Your tailnet (SWITCHBOARD.md 4.7): the door set up from here rather than from the container's log ----
-
-    private const string TailscaleMachines = "https://login.tailscale.com/admin/machines";
-    private const string TailscaleAccessControls = "https://login.tailscale.com/admin/acls/file";
-
-    // The server's door on the owner's tailnet, as its last report says: how to turn it on, the sign-in while it needs one, then what is done and what is left
-    // (key expiry, Tailnet Lock, what the access rules let reach it), each with the place in Tailscale's console to do it. Only its signed-in owner sees this page,
-    // from home, so the sign-in link and the owner's login are shown here and nowhere else.
-    private static void TailnetCard(StringBuilder body, TailnetBoard board)
-    {
-        if (!board.Enabled)
-        {
-            body.Append("<section id=\"tailnet\"><h2>Away from home</h2>")
-                .Append(Para("Messages on a phone reaches this server through Tailscale, so it works anywhere without opening the server to the internet."))
-                .Append(Para("To use it, turn it on where this server was installed, then start the server again: on Unraid, set Reach from your tailnet to 1 in the container's settings; "
-                    + "with Docker Compose, MESSAGES_TAILNET=1 in the .env file; on Linux or Proxmox, MESSAGES_TAILNET=1 in /etc/messages-server/environment. This page then walks you through the rest."))
-                .Append("</section>");
-            return;
-        }
-        var view = board.Latest;
-        if (view is null)
-        {
-            body.Append("<section id=\"tailnet\"><h2>Your tailnet</h2>").Append(Para("Starting Tailscale…")).Append("</section>");
-            return;
-        }
-        body.Append(view.NeedsAttention ? "<section class=\"attention\" id=\"tailnet\">" : "<section id=\"tailnet\">").Append("<h2>Your tailnet</h2>");
-        if (view.NeedsLogin)
-        {
-            body.Append(Para("Sign this server in to Tailscale with your own account. It joins your tailnet as a machine of its own, and only your devices can reach it."))
-                .Append("<p><a class=\"button\" href=\"").Append(Html(view.Login)).Append("\" target=\"_blank\" rel=\"noopener noreferrer\">Sign in to Tailscale</a></p>")
-                .Append("<p class=\"quiet\">This page moves on by itself once you have.</p></section>");
-            return;
-        }
-        if (!view.Running)
-        {
-            body.Append(Para(view.State == "Starting" ? "Connecting to Tailscale…" : "Tailscale isn't connected just now. The server keeps trying.")).Append("</section>");
-            return;
-        }
-        var name = view.Name is { Length: > 0 } n ? n : "messages-server";
-        body.Append("<dl>");
-        Row(body, "Address", board.Port == NetworkEndpoint.DefaultPort ? name : $"{name}:{board.Port}", copy: true);
-        if (view.Address is { Length: > 0 } address) Row(body, "Tailscale address", address, copy: true);
-        body.Append("</dl><ul class=\"rows\">");
-
-        if (view.Tagged)
-            Step(body, false, "Tagged", "Tagged in Tailscale, so the server can't tell your devices from anyone else's: your access rules decide alone who reaches it.");
-        else
-            Step(body, true, "Signed in", view.Owner is { Length: > 0 } owner ? $"As {owner}. The server lets in only this account's devices." : "The server lets in only your own devices.");
-
-        if (view.ExpiryOff) Step(body, true, "Key expiry off", "It stays signed in.");
-        else if (view.Expiry is { } expiry)
-        {
-            var until = DateTimeOffset.TryParse(expiry, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at) ? " on " + at.ToLocalTime().ToString("d MMM yyyy", CultureInfo.InvariantCulture) : "";
-            Step(body, false, "Turn off key expiry", $"Tailscale signs the server out{until} unless key expiry is off. Open it in Tailscale, then choose Disable key expiry from its menu.",
-                Link(TailscaleMachines + (view.Address is { Length: > 0 } ip ? "/" + Uri.EscapeDataString(ip) : ""), "Open in Tailscale"));
-        }
-
-        switch (view.Lock)
-        {
-            case "off": Step(body, true, "Tailnet Lock", "Your tailnet doesn't use it, so there is nothing to sign.", word: "Not used"); break;
-            case "signed": Step(body, true, "Signed for Tailnet Lock", "Your tailnet trusts it."); break;
-            case "unsigned":
-                Step(body, false, "Sign it for Tailnet Lock", "Your tailnet won't let your devices reach it until it is signed. On one of your signing devices, run:",
-                    view.NodeKey is { Length: > 0 } key ? "<span class=\"copy block\">tailscale lock sign " + Html(key) + "</span>" : null);
-                break;
-        }
-
-        var snippet = Html($"\"hosts\": {{ \"{name}\": \"{view.Address ?? "100.x.y.z"}\" }},\n\"grants\": [\n  {{ \"src\": [\"{view.Owner ?? "you@example.com"}\"], \"dst\": [\"{name}\"], \"ip\": [\"tcp:{board.Port}\"] }}\n]");
-        var rule = "<pre class=\"copy\">" + snippet + "</pre>" + Link(TailscaleAccessControls, "Open access controls");
-        switch (view.Rules)
-        {
-            case "yours": Step(body, true, "Only your devices", "Your access rules allow only your devices, and the server checks each one too."); break;
-            case "open":
-                // The server's own check is the fence that matters; the rule is a second one, so this is not a thing to do.
-                var who = view.Everyone ? "every device on your tailnet" : view.Others == 1 ? "1 device that isn't yours" : $"{view.Others} devices that aren't yours";
-                Step(body, true, "Only your devices", $"The server checks each connection and turns away anything that isn't one of your devices. Your access rules let {who} reach it as well; to close that there too, add this to your access controls and make sure no rule for everyone reaches it.",
-                    rule, optional: true);
-                break;
-            case "none":
-                Step(body, false, "Let your devices reach it", "Your access rules let no device reach the server, your phone included. Add this to your access controls:", rule);
-                break;
-            default: Step(body, true, "Only your devices", "The server checks each one."); break;
-        }
-        body.Append("</ul><p class=\"quiet\">To use Messages on a phone, ask to join from it with the address ").Append(Html(name)).Append(".</p></section>");
+            waiting.Count > 0 ? 10 : TailnetWaiting ? 5 : 30);
     }
 
     // ---- Notifications on phones (SWITCHBOARD.md 7.5): the owner's Firebase project given here rather than put in a folder by hand ----
@@ -932,7 +884,10 @@ internal sealed partial class ServerPage
     private string PairBody(HttpRequest request, string code)
     {
         var body = new StringBuilder("<section>");
-        body.Append(Para($"In Messages on the new device, open Settings, then Messages Server, choose to use a pairing code, and enter these three. The code works once, for the next {(int)PairingCodes.Lifetime.TotalMinutes} minutes; making another replaces it."));
+        // Add a PC (SWITCHBOARD.md 10.4): the three in one line, which the PC's server dialog takes pasted whole.
+        body.Append(Para($"In Messages on the PC, open Settings, then Messages Server, and paste this line where it asks for the server's address. The code in it works once, for the next {(int)PairingCodes.Lifetime.TotalMinutes} minutes; making another replaces it."));
+        body.Append("<p class=\"copy block line\">").Append(Html(JoinLink.Line(Address(request), fingerprint(), code))).Append("</p>");
+        body.Append(Para("Or choose to use a pairing code there, and enter these three:"));
         body.Append("<dl>");
         Row(body, "Pairing code", code, copy: true, large: true);
         Row(body, "Address", Address(request), copy: true);
@@ -1113,14 +1068,14 @@ internal sealed partial class ServerPage
 
     // The page around a body: the logo and the title, and beside it `badge` when there is one; `refresh` reloads it every so many seconds (the home page, so a request to
     // join shows up without a click). It reloads the plain home page, so a notice (removed, joined) is said once.
-    private static Task PageAsync(HttpContext context, int status, string title, string body, string? badge = null, int? refresh = null)
+    private static Task PageAsync(HttpContext context, int status, string title, string body, string? badge = null, int? refresh = null, string refreshTo = "/")
     {
         var response = context.Response;
         response.StatusCode = status;
         response.ContentType = "text/html; charset=utf-8";
         var html = $"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\">"
-            + (refresh is { } seconds ? $"<meta http-equiv=\"refresh\" content=\"{seconds};url=/\">" : "")
-            + $"<link rel=\"icon\" href=\"{LogoPath}\"><title>{Html(title)}</title><style>{Style}</style></head><body><main>"
+            + (refresh is { } seconds ? $"<meta http-equiv=\"refresh\" content=\"{seconds};url={Html(refreshTo)}\">" : "")
+            + $"<link rel=\"icon\" href=\"{LogoPath}\"><title>{Html(title)}</title><style>{Style}{SetupStyle}</style></head><body><main>"
             + $"<header><img src=\"{LogoPath}\" alt=\"\"><h1>{Html(title)}</h1>{(badge is null ? "" : $"<span class=\"pill\">{Html(badge)}</span>")}</header>{body}</main></body></html>";
         return response.WriteAsync(html, Encoding.UTF8, context.RequestAborted);
     }

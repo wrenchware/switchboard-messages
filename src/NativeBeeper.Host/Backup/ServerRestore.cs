@@ -162,7 +162,7 @@ internal static class ServerRestore
     /// refuses the reset; Google Messages is unpaired here by the reset itself.
     /// </summary>
     public static async Task<RestoreOutcome?> ApplyPendingAsync(ServerBackupPaths paths, IStateProtector protector, string? folder, Func<bool> signedIn, Action<string> log,
-        TimeProvider? time = null, IReadOnlySet<string>? keep = null, Func<bool>? signedInForReset = null, CancellationToken cancellationToken = default)
+        TimeProvider? time = null, IReadOnlySet<string>? keep = null, Func<bool>? signedInForReset = null, bool restorePagePassword = true, CancellationToken cancellationToken = default)
     {
         time ??= TimeProvider.System;
         if (File.Exists(Path.Combine(paths.Restore, ResetFile)))
@@ -217,7 +217,7 @@ internal static class ServerRestore
         Commit built;
         try
         {
-            built = await BuildAsync(paths, protector, file, plan, staged, time, cancellationToken).ConfigureAwait(false);
+            built = await BuildAsync(paths, protector, file, plan, staged, time, restorePagePassword, cancellationToken).ConfigureAwait(false);
             await WriteWholeAsync(commitPath, JsonSerializer.SerializeToUtf8Bytes(built)).ConfigureAwait(false);
         }
         catch (BackupFileException failure)
@@ -325,7 +325,7 @@ internal static class ServerRestore
 
     // Every new file in the staged folder, sealed with this server's protector; nothing outside it is touched. Returns the moves that put them in place.
     private static async Task<Commit> BuildAsync(ServerBackupPaths paths, IStateProtector protector, string file, RestorePlan plan, string staged, TimeProvider time,
-        CancellationToken cancellationToken)
+        bool restorePagePassword, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(staged);
         var moves = new List<Move>();
@@ -384,6 +384,10 @@ internal static class ServerRestore
         if (identity.SpaceKey is { Length: > 0 } spaceKey)
             await WritePrivateAsync(Stage(paths.Space), Seal(JsonSerializer.SerializeToUtf8Bytes(new { Version = 1, LocalKey = spaceKey }))).ConfigureAwait(false);
         else deletes.Add(paths.Space);
+        // The page's password as the old server's first run chose it (a hash), staged sealed as the other secrets are. Not when this server's password is in its
+        // environment, which wins anyway; and a backup without one leaves this server's as it is, so nobody is locked out of the page.
+        if (restorePagePassword && identity.PagePassword is { Length: > 0 } pagePassword)
+            await WritePrivateAsync(Stage(paths.PagePassword, sealedFile: true), Seal(Encoding.UTF8.GetBytes(pagePassword))).ConfigureAwait(false);
 
         // state.db: the allowlisted rows, into a new file.
         var stateFile = Stage(paths.State, store: true);

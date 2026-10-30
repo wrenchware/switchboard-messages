@@ -159,7 +159,8 @@ internal static class ServerBackupExport
         var project = File.Exists(Path.Combine(paths.PushProject, ServerBackupPaths.FirebaseSettings)) ? paths.PushProject : Path.Combine(paths.Data, "push");
         string? settingsFile = Text(Path.Combine(project, ServerBackupPaths.FirebaseSettings)), accountFile = Text(Path.Combine(project, ServerBackupPaths.FirebaseAccount));
         if (settingsFile is null || accountFile is null) settingsFile = accountFile = null;
-        return new(Text(paths.TlsCertificate), Text(paths.TlsKey), generation, devices, push, settingsFile, accountFile, File.Exists(paths.JoinPause), space, settings);
+        return new(Text(paths.TlsCertificate), Text(paths.TlsKey), generation, devices, push, settingsFile, accountFile, File.Exists(paths.JoinPause), space, settings,
+            Text(paths.PagePassword));
     }
 
     private static Dictionary<string, int> Exported(JsonElement page)

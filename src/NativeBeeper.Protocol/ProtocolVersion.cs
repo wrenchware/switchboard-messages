@@ -99,6 +99,8 @@ namespace NativeBeeper.Protocol;
 /// <c>server.backup.password</c> to the owner device, and the <c>backup</c> account signal (<see cref="AccountSignals.Backup"/>). Additive: a client below 26 never
 /// calls them and is never sent the signal (its place in the sequence counts as sent), and a host answers them as not supported to a connection that negotiated less.
 /// A restore (10.3) changes nothing on the wire: every copy a client holds starts over through the new epochs it already reads.</para>
+/// <para>27 (SWITCHBOARD.md stage 10, 10.4) adds <c>devices.joinLink</c>: a new pairing code as the link a phone scans and the line a PC pastes, to the owner device.
+/// Additive: a client below 27 never calls it, and a host answers it as not supported to a connection that negotiated less.</para>
 /// <para>27 (SWITCHBOARD.md stage 10, 10.5) adds <c>accounts.remoteSignIn</c>: one method for a sign-in in the server's own browser, for any service it names (<see cref="RemoteSignInServices"/>), with
 /// the <c>signInView</c> event and the input method of 12 and one new input kind, <see cref="RemoteSignIn.DoneKind"/>, by which the person says a Messenger or Instagram sign-in is finished. It adds
 /// <see cref="HostLimits.RemoteMessengerSignIn"/> and <see cref="HostLimits.RemoteInstagramSignIn"/>. Additive: a client below 27 never calls it and keeps the methods of 12 and 15, which stay; a host
@@ -107,6 +109,8 @@ namespace NativeBeeper.Protocol;
 public static class ProtocolVersion
 {
     public const int Current = 27;
+    /// <summary>The first version with the join link (<see cref="ProtocolMethods.DevicesJoinLink"/>).</summary>
+    public const int JoinLinks = 27;
     /// <summary>The first version with <c>accounts.remoteSignIn</c> for any service (<see cref="ProtocolMethods.ServerSignInMethod"/>) and the Done input.</summary>
     public const int ServerSignIn = 27;
     /// <summary>The first version with the server's own backup (<see cref="ProtocolMethods.ServerBackupStatusRead"/> and the <c>backup</c> signal).</summary>

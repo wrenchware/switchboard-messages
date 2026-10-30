@@ -33,4 +33,6 @@ internal sealed record ServerBackupPaths(string Data, string Keys)
     public const string FirebaseSettings = "google-services.json", FirebaseAccount = "service-account.json";
     public string JoinPause => Path.Combine(Keys, "join-requests-paused");
     public string DevicesGeneration => Path.Combine(Keys, "devices.generation");
+    /// <summary>The page's password as its first run kept it: a salted hash, never the password (the network host's StoredPassword).</summary>
+    public string PagePassword => Path.Combine(Keys, "server-page.password");
 }

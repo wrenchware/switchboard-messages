@@ -69,6 +69,8 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
                 // A live code goes to the container's output (docker logs) and never into server.log on the data volume.
                 ShowCode = Show,
                 PagePassword = (environment ?? Environment.GetEnvironmentVariable)("MESSAGES_ADMIN_PASSWORD"),
+                // Without that password, the page sets itself up with a setup code printed to the container's output (SWITCHBOARD.md 10.4).
+                FirstRun = true,
                 RelaySocket = relay,
                 Tailnet = tailnet,
                 Push = NativeBeeper.Host.Network.FirebaseTransport.TryLoad(pushFrom, log),

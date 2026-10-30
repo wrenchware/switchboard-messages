@@ -141,8 +141,13 @@ internal sealed class NetworkHost : IAsyncDisposable
         this.options = options; log = options.Log; this.serve = serve; this.version = version; this.certificate = certificate; this.devices = devices; this.flush = flush;
         pairing = new PairingCodes(options.Time, log, options.ShowCode);
         joins = new JoinRequests(options.Time, log, Path.Combine(options.KeysFolder ?? options.DataFolder, "join-requests-paused"));
-        page = ServerPage.Create(options.PagePassword, options.KeysFolder ?? options.DataFolder, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
-            options.Tailnet, pushes, history, options.Backups);
+        var keys = options.KeysFolder ?? options.DataFolder;
+        // The first run (SWITCHBOARD.md 10.4): with no password where the server was installed, the page sets one up; its setup code is shown as a pairing code is.
+        var setup = options.FirstRun
+            ? new ServerPageSetup(options.ShowCode, options.Tailnet is { Enabled: true } ? new TailscaleAdmin(keys, options.Protector, log, options.TailscaleHandler) : null)
+            : null;
+        page = ServerPage.Create(options.PagePassword, keys, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
+            options.Tailnet, pushes, history, options.Backups, setup);
         devices.Revoked += EndDevice;
         devices.Restored = options.Restored;
         // Real time, whatever clock the codes expire by: the check itself reads that clock (a test calls CheckPairing after moving it).
@@ -478,7 +483,7 @@ internal sealed class NetworkHost : IAsyncDisposable
                 await RefuseAsync(context, StatusCodes.Status403Forbidden, "join_not_home").ConfigureAwait(false);
                 return;
             }
-            if (devices.Count == 0 && page is null)
+            if (devices.Count == 0 && (page is null || page.SettingUp))
             {
                 await RefuseAsync(context, StatusCodes.Status409Conflict, "join_no_approver").ConfigureAwait(false);
                 return;
@@ -532,7 +537,7 @@ internal sealed class NetworkHost : IAsyncDisposable
 
     private async Task ServeDeviceAsync(string device, WebSocketFrameChannel channel, long? arrived, bool relayed)
     {
-        var admitted = new Admitted(device, channel, new DeviceView(devices, device, pairing, joins, log)) { Serial = Interlocked.Increment(ref admissions) };
+        var admitted = new Admitted(device, channel, new DeviceView(devices, device, pairing, joins, log, address => JoinLinkFor(address))) { Serial = Interlocked.Increment(ref admissions) };
         // Seen before serve starts the dispatcher: from then on the device's requests are answered on other threads while this one carries on below, so a
         // devices.list among its first could list the device asking as never connected (the harness caught it under load, 2026-10-16).
         devices.Seen(device);
@@ -587,7 +592,7 @@ internal sealed class NetworkHost : IAsyncDisposable
 
     private static bool Relayed(HttpContext context) => context.Features.Get<IConnectionItemsFeature>()?.Items.ContainsKey(RelayKey) == true;
     // The private relay socket authenticates the tailnet path before TLS; an address or HTTP header cannot do that.
-    private static bool FromTrustedNetwork(HttpContext context) => Relayed(context) || ServerPage.FromHome(context.Connection.RemoteIpAddress);
+    private bool FromTrustedNetwork(HttpContext context) => Relayed(context) || (options.HomeCheck ?? ServerPage.FromHome)(context.Connection.RemoteIpAddress);
 
     private async Task RefuseAsync(HttpContext context, int status, string reason, string? word = null)
     {
@@ -651,11 +656,37 @@ internal sealed class NetworkHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await StopAsync(TimeSpan.Zero).ConfigureAwait(false);
 
+    // A new pairing code as the join link and the PC's line (protocol 27, SWITCHBOARD.md 10.4): the address the owner's PC reaches the server by (or the first name the
+    // server was given), its tailnet name and Tailscale account when its door is signed in, and its fingerprint.
+    private JoinLinkIssued JoinLinkFor(string? address)
+    {
+        address = string.IsNullOrWhiteSpace(address) ? options.HostNames.FirstOrDefault() is { Length: > 0 } named ? Port == NetworkEndpoint.DefaultPort ? named : $"{named}:{Port}" : null
+            : address.Trim();
+        var view = options.Tailnet?.Latest is { Running: true } running ? running : null;
+        var code = pairing.Issue();
+        var link = JoinLink.Build(view?.Name, address, Fingerprint, code, view is { Tagged: false } ? view.Owner : null);
+        return new(link, address is null ? null : JoinLink.Line(address, Fingerprint, code), code, (int)PairingCodes.Lifetime.TotalSeconds, Fingerprint, address, view?.Name);
+    }
+
     // One connection's devices.*: the host's list with this device marked. A device token is never an admin's (SWITCHBOARD.md's harvest rule): any device
     // may revoke (which ends this connection once the answer is written) or rename itself, and only the owner, the device paired first of those still paired
     // (DeviceRegistry.Owner), may revoke or rename another or open a code for a new one.
-    private sealed class DeviceView(DeviceRegistry devices, string current, PairingCodes pairing, JoinRequests joins, Action<string> log) : IPairedDevices
+    private sealed class DeviceView(DeviceRegistry devices, string current, PairingCodes pairing, JoinRequests joins, Action<string> log, Func<string?, JoinLinkIssued> joinLink)
+        : IPairedDevices
     {
+        public Task<JoinLinkIssued> JoinLinkAsync(string? address, CancellationToken cancellationToken = default)
+        {
+            if (!devices.IsOwner(current))
+            {
+                log("server pairing refused reason=not_owner");
+                throw new NativeBeeper.Core.Backend.BackendException(NativeBeeper.Core.Backend.BackendFailure.Forbidden,
+                    "Only the device paired first with this server can pair another device.");
+            }
+            // An address a person could not have typed is no address: the line and the link carry it to another device.
+            if (address is { Length: > 0 } given && (given.Length > 300 || given.Any(c => char.IsWhiteSpace(c) || c is '/' or '#' or '?' or '@'))) address = null;
+            return Task.FromResult(joinLink(address));
+        }
+
         // Asking to join (protocol 21): the requests, and answering them, are the owner's as a new code is.
         public Task<IReadOnlyList<JoinRequest>> JoinRequestsAsync(CancellationToken cancellationToken = default)
         {

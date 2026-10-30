@@ -25,9 +25,10 @@ public static class HistoryMerge
         {
             var held = whole.Messages.Select(MessageIdentity.Key).ToHashSet();
             // Only a copy that reaches back as far as what is drawn: one shorter (a page after a restart, one started again) would cut the conversation
-            // under someone scrolled back in it (review, 2026-10-30); the rows then join as before.
+            // under someone scrolled back in it (review, 2026-10-30); the rows then join as before. At the copy's oldest instant only those it holds count:
+            // messages sharing a time are ordered by more than it.
             var reaches = !whole.MoreOlder || saved is null || saved.Chat.Id != fresh.Chat.Id || saved.Messages.Count == 0
-                || saved.Messages.Min(m => m.Timestamp) >= whole.Messages[0].Timestamp;
+                || saved.Messages.All(m => m.Timestamp > whole.Messages[0].Timestamp || held.Contains(MessageIdentity.Key(m)));
             if (reaches && fresh.Messages.All(m => held.Contains(MessageIdentity.Key(m))))
                 return fresh with
                 {

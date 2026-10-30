@@ -667,7 +667,15 @@ internal sealed partial class ConversationHistory : IWholeHistory, IChatReader, 
                     try
                     {
                         await ForgetAsync([.. named.Where(held.ContainsKey)]).ConfigureAwait(false);
-                        await db.WriteRowsAsync([.. named.Select(id => new HistoryListRow(id, null))], stop.Token).ConfigureAwait(false);
+                        // Behind a whole read of the list under way: it can have listed these before they went, and would write them back over the mark
+                        // until two more reads left them out (review, 2026-10-30).
+                        await rowsGate.WaitAsync(stop.Token).ConfigureAwait(false);
+                        try
+                        {
+                            foreach (var id in named) listed.TryRemove(id, out _);
+                            await db.WriteRowsAsync([.. named.Select(id => new HistoryListRow(id, null))], stop.Token).ConfigureAwait(false);
+                        }
+                        finally { rowsGate.Release(); }
                     }
                     catch (Exception failure) when (!stop.IsCancellationRequested) { log($"history forget failed error={failure.GetType().Name}"); }
                 });

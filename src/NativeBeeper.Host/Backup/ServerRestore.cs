@@ -352,7 +352,8 @@ internal static class ServerRestore
         if (identity.Certificate is { Length: > 0 } certificate && identity.CertificateKey is { Length: > 0 } key)
         {
             // The key first, as the certificate's own writer does.
-            await WritePrivateAsync(Stage(paths.TlsKey, sealedFile: true), Seal(Encoding.UTF8.GetBytes(key))).ConfigureAwait(false);
+            // Unsealed into its place, except where the host keeps it sealed (a Windows server, TlsKeySealed): there the staged, sealed bytes are the file.
+            await WritePrivateAsync(Stage(paths.TlsKey, sealedFile: !paths.TlsKeySealed), Seal(Encoding.UTF8.GetBytes(key))).ConfigureAwait(false);
             await WritePrivateAsync(Stage(paths.TlsCertificate), Encoding.UTF8.GetBytes(certificate)).ConfigureAwait(false);
         }
 

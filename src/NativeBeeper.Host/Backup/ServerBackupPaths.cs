@@ -11,7 +11,11 @@ internal sealed record ServerBackupPaths(string Data, string Keys)
     public string State => Path.Combine(Data, "state.db");
     public string Shared => Path.Combine(Data, "Server", SharedStateStore.FileName);
     public string Space => Path.Combine(Data, "Server", SharedSpace.FileName);
-    public string History => Path.Combine(Data, "history.db");
+    public string History => HistoryFile ?? Path.Combine(Data, "history.db");
+    /// <summary>Where a host keeps its whole history when not beside the data (the Windows server's <c>&lt;root&gt;\Server\history.db</c>, SWITCHBOARD.md 10.7).</summary>
+    public string? HistoryFile { get; init; }
+    /// <summary>The certificate's key is kept sealed with the host's protector (the Windows server's DPAPI, SWITCHBOARD.md 10.7); on Linux it is plain PEM in the keys volume.</summary>
+    public bool TlsKeySealed { get; init; }
     public string Archive => Path.Combine(Data, "archive.db");
     public string Photos => Path.Combine(Data, "saved-photos.db");
     public string Devices => Path.Combine(Data, "devices.json");

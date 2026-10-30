@@ -45,6 +45,14 @@ internal sealed partial class ServerPage
                 .Append(PendingCancel(token));
         if (!status.HasFolder)
         {
+            // A Windows server's folder is the person's choice (SWITCHBOARD.md 10.7, D7); a Docker server's is its mapping.
+            if (service.FolderChoiceFile is not null)
+            {
+                body.Append(Para("Backups are off until you choose a folder for them: any folder on this PC, a mapped drive, a network share such as \\\\nas\\backups, or a OneDrive folder."))
+                    .Append(FolderForm(token, null));
+                body.Append("</section>");
+                return;
+            }
             body.Append(Para("Backups are off: the server has no folder for them. Give it one, then start it again: with Docker, map a folder on your server to /backups "
                 + "(on Unraid, a share such as /mnt/user/backups/messages); or set MESSAGES_BACKUPS to a folder the server can write to."));
             body.Append("</section>");
@@ -73,6 +81,7 @@ internal sealed partial class ServerPage
             .Append("<button type=\"submit\" name=\"do\" value=\"").Append(status.Enabled ? "off" : "on").Append("\" class=\"quiet\">").Append(status.Enabled ? "Turn off" : "Turn on").Append("</button></form>")
             .Append("<form method=\"get\" action=\"/backups/password\"><button type=\"submit\" class=\"quiet\">").Append(status.HasPassword ? "Change the password…" : "Set a password…").Append("</button></form>");
         body.Append("<p class=\"quiet\">Each backup holds your conversations, the server's settings and its devices, never a sign-in: after a restore you sign in to each account again.</p>");
+        if (service.FolderChoiceFile is not null) body.Append("<details><summary>Use another folder</summary>").Append(FolderForm(token, service.Folder)).Append("</details>");
         // A restore goes only onto a server with no service signed in; one in use is reset first.
         if (accounts == 0)
             body.Append("<form method=\"get\" action=\"/restore\"><button type=\"submit\">Restore from a backup…</button></form>");
@@ -141,11 +150,23 @@ internal sealed partial class ServerPage
                 service.SetEnabled(form["do"] == "on");
                 Redirect(context.Response, "/#backups");
                 return;
+            case "folder":
+                var chosen = service.ChooseFolder(form["folder"].ToString());
+                log($"server page backup folder outcome={chosen}");
+                Redirect(context.Response, chosen == "chosen" ? "/?done=backup_folder#backups" : "/?done=backup_folder_" + chosen + "#backups");
+                return;
             default:
                 Redirect(context.Response, "/");
                 return;
         }
     }
+
+    // The Windows server's folder, typed as a path: the server runs as the person, so whatever they can open in File Explorer it can write to.
+    private static string FolderForm(string token, string? current) =>
+        new StringBuilder("<form method=\"post\" action=\"/backups\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">")
+            .Append("<label for=\"folder\">Folder</label><input id=\"folder\" name=\"folder\" type=\"text\" required maxlength=\"1024\" spellcheck=\"false\" placeholder=\"D:\\Backups\\Messages\" value=\"")
+            .Append(Html(current ?? "")).Append("\">")
+            .Append("<button type=\"submit\" name=\"do\" value=\"folder\">Use this folder</button></form>").ToString();
 
     // The backup's password, with the page's own: whoever sets it decides who can read every backup from now on.
     private async Task BackupPasswordAsync(HttpContext context, IFormCollection? form, string token)

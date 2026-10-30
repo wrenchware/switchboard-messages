@@ -159,7 +159,9 @@ internal static class ServerBackupExport
         var project = File.Exists(Path.Combine(paths.PushProject, ServerBackupPaths.FirebaseSettings)) ? paths.PushProject : Path.Combine(paths.Data, "push");
         string? settingsFile = Text(Path.Combine(project, ServerBackupPaths.FirebaseSettings)), accountFile = Text(Path.Combine(project, ServerBackupPaths.FirebaseAccount));
         if (settingsFile is null || accountFile is null) settingsFile = accountFile = null;
-        return new(Text(paths.TlsCertificate), Text(paths.TlsKey), generation, devices, push, settingsFile, accountFile, File.Exists(paths.JoinPause), space, settings,
+        // A Windows server keeps the certificate's key sealed to its user (TlsKeySealed); the backup holds it unsealed, as it holds every other secret.
+        var tlsKey = paths.TlsKeySealed && Opened(paths.TlsKey) is { } openedKey ? Encoding.UTF8.GetString(openedKey) : paths.TlsKeySealed ? null : Text(paths.TlsKey);
+        return new(Text(paths.TlsCertificate), tlsKey, generation, devices, push, settingsFile, accountFile, File.Exists(paths.JoinPause), space, settings,
             Text(paths.PagePassword));
     }
 

@@ -186,6 +186,9 @@ internal sealed partial class TailnetDoor
         if (authKeyOnInput) start.ArgumentList.Add("--authkey-stdin");
         start.Environment.Clear();
         if (OperatingSystem.IsLinux()) start.Environment["MESSAGES_HELPER_PARENT_PID"] = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
+        // On Windows (the PC's own server, SWITCHBOARD.md 10.7) a Go program finds the system's own libraries through SystemRoot, a path and nothing secret; the job the
+        // server keeps its helpers in ends the door with the server, so it needs no parent watch.
+        if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("SystemRoot") is { Length: > 0 } systemRoot) start.Environment["SystemRoot"] = systemRoot;
         return start;
     }
 

@@ -107,6 +107,30 @@ internal sealed record NetworkHostOptions(string DataFolder, IStateProtector Pro
     /// <summary>The record of the restore this server was made from, when it was (<see cref="NativeBeeper.Host.Backup.RestoredMark"/>): an unknown token is then told so.</summary>
     internal NativeBeeper.Host.Backup.RestoredMark? Restored { get; init; }
 
+    /// <summary>
+    /// The Windows server on its own PC (SWITCHBOARD.md 10.7): takes the one-time code Messages opens its page with (<see cref="NativeBeeper.Host.LocalPageLink"/>), from a
+    /// browser on this PC only. Null on every other host.
+    /// </summary>
+    public Func<string?, bool>? OnceSignIn { get; init; }
+
+    /// <summary>
+    /// The Windows server on its own PC: a signed-in browser on this PC (loopback, never a relayed tailnet device) is not asked for the page's password again. That
+    /// browser's session came from Messages' one-time code or the password, and the PC's own user is who runs this server. False on every other host.
+    /// </summary>
+    public bool DesktopTrust { get; init; }
+
+    /// <summary>
+    /// The certificate's private key is kept sealed with <see cref="Protector"/> (the Windows server's DPAPI, SWITCHBOARD.md 10.7), as its other secrets are; false keeps
+    /// it plain PEM in the keys folder (the Linux host's keys volume).
+    /// </summary>
+    public bool SealTlsKey { get; init; }
+
+    /// <summary>
+    /// The Windows server on its own PC: Connect on its page, from a browser on this PC, opens that service's native sign-in on the desktop (it asks Messages, which owns
+    /// those windows). Takes the server's word for the service (<c>ServerAccountProviders</c>); false when it could not ask. Null on every other host.
+    /// </summary>
+    public Func<string, bool>? DesktopSignIn { get; init; }
+
     // A record's own text prints every member, the password with them: this one names only what is safe to see.
     public override string ToString() => $"NetworkHostOptions {{ BindAddress = {BindAddress}, Port = {Port}, Page = {(PagePassword is null ? "off" : "set")}, Relay = {(RelaySocket is null ? "off" : "on")} }}";
 

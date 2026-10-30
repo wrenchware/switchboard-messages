@@ -154,6 +154,13 @@ internal sealed class NetworkHost : IAsyncDisposable
             : null;
         page = ServerPage.Create(options.PagePassword, keys, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
             options.Tailnet, pushes, history, options.Backups, setup);
+        // The Windows server on its own PC (SWITCHBOARD.md 10.7, ServerPage.Desktop.cs).
+        if (page is not null)
+        {
+            page.OnceSignIn = options.OnceSignIn;
+            page.DesktopTrust = options.DesktopTrust;
+            page.DesktopSignIn = options.DesktopSignIn;
+        }
         devices.Revoked += EndDevice;
         devices.Restored = options.Restored;
         // Real time, whatever clock the codes expire by: the check itself reads that clock (a test calls CheckPairing after moving it).
@@ -300,7 +307,7 @@ internal sealed class NetworkHost : IAsyncDisposable
         if (!IPAddress.TryParse(options.BindAddress, out var address)) throw new ArgumentException("The bind address is not an IP address.", nameof(options));
         Directory.CreateDirectory(options.DataFolder);
         var devices = loaded ?? await DeviceRegistry.LoadAsync(options.DataFolder, options.Protector, options.Time, options.Log, options.KeysFolder).ConfigureAwait(false);
-        var certificate = ServerCertificate.LoadOrCreate(options.KeysFolder ?? options.DataFolder, options.HostNames, options.Log);
+        var certificate = ServerCertificate.LoadOrCreate(options.KeysFolder ?? options.DataFolder, options.HostNames, options.Log, options.SealTlsKey ? options.Protector : null);
         var host = new NetworkHost(options, serve, version, certificate, devices, flush, admin, logs, pushes, history);
         try
         {

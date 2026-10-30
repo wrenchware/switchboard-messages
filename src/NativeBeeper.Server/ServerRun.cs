@@ -3,17 +3,20 @@ using Microsoft.Extensions.DependencyInjection;
 using NativeBeeper.App.Services;
 using NativeBeeper.Core.Services;
 using NativeBeeper.GoogleMessages.Spike;
+using NativeBeeper.Host;
 using NativeBeeper.Protocol;
 
 namespace NativeBeeper.Server;
 
 /// <summary>One run of the server: the composition it starts once the window is pumping, and the stop every path ends in (a quit, Restart Manager, the end of the session).</summary>
-internal sealed class ServerRun(ServerOptions options) : IServerLifecycle
+/// <param name="previousExit">The run marker's word for how the last run ended (<c>clean</c>, <c>unclean</c>, ...), which paces the restore (<see cref="RestoreLedger"/>).</param>
+internal sealed class ServerRun(ServerOptions options, string previousExit = "clean") : IServerLifecycle
 {
     private HostStartup? startup;
     private ServerPipe? pipe;
+    private ServerNetwork? network;
     private OwnerWatch? owner;
-    private Task starting = Task.CompletedTask;
+    private Task starting = Task.CompletedTask, networking = Task.CompletedTask, backingUp = Task.CompletedTask;
     private readonly CancellationTokenSource stop = new();
     private int exitCode;
 
@@ -39,14 +42,21 @@ internal sealed class ServerRun(ServerOptions options) : IServerLifecycle
             try
             {
                 queued.Took("start");
-                var composed = HostStartup.Compose(AppLog.Write, shell.Sta ?? throw new InvalidOperationException("no_sta"), options.Restore);
+                var composed = HostStartup.Compose(AppLog.Write, shell.Sta ?? throw new InvalidOperationException("no_sta"), options.Connects);
                 Volatile.Write(ref startup, composed);
                 AppLog.Write($"server ready ms={clock.ElapsedMilliseconds}");
                 // A stop that came while composing opens nothing.
                 if (stop.IsCancellationRequested) return;
                 if (!await ServeAsync(composed, shell)) return;
+                if (options.Connects && !stop.IsCancellationRequested)
+                {
+                    // The page and the phones' door (SWITCHBOARD.md 10.7), beside the restore rather than ahead of it: this PC's own window is on the pipe already.
+                    networking = Task.Run(() => StartNetworkAsync(composed));
+                    // The daily backup into the person's folder, its first look minutes after the start, at below-normal priority.
+                    if (composed.Backup is { } backup) backingUp = Task.Run(() => backup.RunScheduleAsync(stop.Token));
+                }
                 // A stop that came while composing starts nothing: only a restore connects the providers, and none begins once stopping has.
-                if (options.Restore && !stop.IsCancellationRequested) await composed.RestoreAsync(stop.Token);
+                if (options.Connects && !stop.IsCancellationRequested) await PacedRestoreAsync(composed, stop.Token);
                 // A restore that will not run: a client that asked for one while the door was open is answered, not left waiting.
                 else composed.EndRestores();
             }
@@ -57,6 +67,80 @@ internal sealed class ServerRun(ServerOptions options) : IServerLifecycle
                 shell.Stop("start_failed");
             }
         });
+    }
+
+    /// <summary>What a backup being written gets to stop when the server does: inside the slack of <see cref="ServerStopBounds.WorstCase"/>.</summary>
+    internal static readonly TimeSpan BackupStopWait = TimeSpan.FromSeconds(3);
+
+    private static async Task StopPipeAsync(ServerPipe served, TimeSpan drain)
+    {
+        try { await served.StopAsync(drain); }
+        catch (Exception failure) { AppLog.Write($"server stop pipe_error={failure.GetType().Name}"); }
+    }
+
+    // A start of the network still under way is waited for first, within the drain, then its clients get the same drain and the tailnet door closes its node.
+    private async Task StopNetworkAsync(TimeSpan drain)
+    {
+        try { await networking.WaitAsync(drain); } catch (Exception) { }
+        if (Volatile.Read(ref network) is not { } opened) return;
+        try { await opened.StopAsync(drain); }
+        catch (Exception failure) { AppLog.Write($"server stop network_error={failure.GetType().Name}"); }
+    }
+
+    // The network door and page; a failure leaves the pipe serving (ServerNetwork says why). A stop that began meanwhile closes what opened.
+    private async Task StartNetworkAsync(HostStartup composed)
+    {
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            var opened = await ServerNetwork.StartAsync(composed.Host, composed.Backup, AppPaths.DataRoot, composed.Services.GetRequiredService<IStateProtector>(), AppLog.Write, stop.Token);
+            Volatile.Write(ref network, opened);
+            AppLog.Write($"server network ms={clock.ElapsedMilliseconds} outcome={(opened is null ? "off" : "on")}");
+            if (opened is not null && stop.IsCancellationRequested) await opened.StopAsync(TimeSpan.Zero);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception failure) { AppLog.Write($"server network failed type={failure.GetType().Name}"); }
+    }
+
+    /// <summary>
+    /// The start's restore, held as long as <see cref="RestoreLedger"/> says (SWITCHBOARD.md 3.3: Instagram's pacing persisted, so a server that keeps crashing, or a PC that
+    /// signs in and out, never logs Messenger and Instagram in faster than the Linux host may). The door is open meanwhile; a client asking for the restore is answered
+    /// skipped. Only a restore that would log Messenger or Instagram in is counted against the hour; a ledger that cannot be read or written means no restore this run.
+    /// </summary>
+    private async Task PacedRestoreAsync(HostStartup composed, CancellationToken stopping)
+    {
+        // This root's own, beside the Linux host's name for it (<root>\Server\restores.protected), sealed with DPAPI like the server's other files.
+        var ledger = RestoreLedger.For(AppPaths.DataRoot, composed.Services.GetRequiredService<IStateProtector>(), TimeProvider.System, AppLog.Write);
+        var counted = composed.RestoresAccounts;
+        RestoreLedger.Decision decision;
+        try { decision = await ledger.StartAsync(previousExit, counted); }
+        catch (Exception failure)
+        {
+            AppLog.Write($"server restore skipped reason=paced error={failure.GetType().Name}");
+            composed.EndRestores();
+            return;
+        }
+        if (!decision.Saved)
+        {
+            AppLog.Write("server restore skipped reason=ledger_not_saved");
+            composed.EndRestores();
+            return;
+        }
+        if (decision.Wait > TimeSpan.Zero)
+        {
+            AppLog.Write($"server restore held reason=paced wait_s={(long)Math.Ceiling(decision.Wait.TotalSeconds)} unclean={decision.Unclean} recent={decision.Recent}");
+            composed.EndRestores();
+            try { await Task.Delay(decision.Wait, stopping); }
+            catch (OperationCanceledException) { return; }
+        }
+        if (!counted) AppLog.Write("server restore counted=no reason=no_meta_account");
+        else if (!await ledger.RecordAsync())
+        {
+            AppLog.Write("server restore skipped reason=ledger_not_saved");
+            composed.EndRestores();
+            return;
+        }
+        await composed.RestoreAsync(stopping);
     }
 
     // The clients' door, open before the providers connect so a client sees the state as the restore changes it. False when the pipe's name was
@@ -120,10 +204,19 @@ internal sealed class ServerRun(ServerOptions options) : IServerLifecycle
         // After the start has ended, so a pipe still being opened is not missed. No new client; then the ones connected are given the time sends get
         // to have the answers to what they already asked written (the request that began this stop is one of them); and only then are the providers
         // closed, so nothing a client sent is cut off by the providers going first.
-        if (Volatile.Read(ref pipe) is { } served)
+        // The network door (SWITCHBOARD.md 10.7) closes beside the pipe and within the pipe's own bound (its drain, then the tailnet door), so the stop's worst case
+        // (ServerStopBounds.WorstCase) is unchanged by it.
+        var pipeStop = Volatile.Read(ref pipe) is { } served ? StopPipeAsync(served, budget.Sends) : Task.CompletedTask;
+        var networkStop = StopNetworkAsync(budget.Sends);
+        try { await Task.WhenAll(pipeStop, networkStop).WaitAsync(budget.Sends + PipeHost.WorstStop); }
+        catch (TimeoutException) { AppLog.Write("server stop doors_still_closing"); }
+        catch (Exception) { }
+        // A backup being written stops with the run and leaves no file behind (its temporary is removed), within the stop's slack.
+        if (Volatile.Read(ref startup)?.Backup is { } backup)
         {
-            try { await served.StopAsync(budget.Sends); }
-            catch (Exception failure) { AppLog.Write($"server stop pipe_error={failure.GetType().Name}"); }
+            backup.Stop();
+            try { await backingUp.WaitAsync(BackupStopWait); } catch (Exception) { }
+            if (!await backup.IdleAsync(TimeSpan.Zero)) AppLog.Write("server stop backup_still_running");
         }
         if (Volatile.Read(ref startup) is { } composed)
         {

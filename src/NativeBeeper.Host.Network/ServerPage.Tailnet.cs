@@ -17,7 +17,7 @@ internal sealed partial class ServerPage
     private const string TailscaleAccessControls = "https://login.tailscale.com/admin/acls/file";
     private const string TailscaleLock = "https://login.tailscale.com/admin/settings/tailnet-lock";
 
-    private static bool IsTailnetPath(string? path) => path is "/tailnet/signout" or "/tailnet/oauth" or "/tailnet/oauth/remove" or "/tailnet/fix";
+    private static bool IsTailnetPath(string? path) => path is "/tailnet/signout" or "/tailnet/oauth" or "/tailnet/oauth/remove" or "/tailnet/fix" or "/tailnet/turn";
 
     // Whether the page should look again soon: the door is starting, or waits to be signed in or approved.
     private bool TailnetWaiting => tailnet is { Enabled: true } board && board.Latest is not { Running: true };
@@ -28,6 +28,7 @@ internal sealed partial class ServerPage
         "tailnet_no_door" => "Tailscale isn't running on the server just now, so nothing was signed out. Try again in a minute.",
         "tailnet_oauth_saved" => "The OAuth client is kept on the server. Choose Fix it for me to use it.",
         "tailnet_oauth_removed" => "The OAuth client was removed from the server. Delete it in Tailscale too if you no longer need it.",
+        "tailnet_turn_failed" => "Tailscale couldn't be turned on or off just now, so nothing changed. Try again in a minute.",
         _ => null,
     };
 
@@ -37,6 +38,28 @@ internal sealed partial class ServerPage
     // The card: how to turn the door on, its sign-in while it needs one, then what is done and what is left.
     private void TailnetCard(StringBuilder body, TailnetBoard board, string token)
     {
+        TailnetCardBody(body, board, token);
+        // Where the page is the switch (the Windows server), turning it off is offered under the card once it is on.
+        if (board.Enabled && board.Turn is not null)
+            body.Append("<p class=\"quiet\">").Append(Html("Tailscale runs inside Messages Server on this PC.")).Append("</p>").Append(TailnetTurnForm(token, on: false));
+    }
+
+    private static string TailnetTurnForm(string token, bool on) =>
+        "<form method=\"post\" action=\"/tailnet/turn\"><input type=\"hidden\" name=\"form\" value=\"" + Html(token) + "\"><button type=\"submit\" name=\"do\" value=\""
+        + (on ? "on\">Turn on Tailscale" : "off\" class=\"quiet\">Turn off Tailscale") + "</button></form>";
+
+    private void TailnetCardBody(StringBuilder body, TailnetBoard board, string token)
+    {
+        if (!board.Enabled && board.Turn is not null)
+        {
+            // The Windows server (SWITCHBOARD.md 10.7): a switch, here and now; Tailscale runs inside Messages Server, with nothing else to install.
+            body.Append("<section id=\"tailnet\"><h2>Away from home</h2>")
+                .Append(Para("Messages on a phone reaches this PC's Messages Server through Tailscale, so it works anywhere without opening this PC to the internet. "
+                    + "Tailscale runs inside Messages Server: there is nothing else to install. Once it is on, this page walks you through signing it in."))
+                .Append(TailnetTurnForm(token, on: true))
+                .Append("</section>");
+            return;
+        }
         if (!board.Enabled)
         {
             body.Append("<section id=\"tailnet\"><h2>Away from home</h2>")
@@ -179,6 +202,18 @@ internal sealed partial class ServerPage
         var post = form is not null;
         switch (path)
         {
+            // The Windows server's switch (TailnetBoard.Turn): kept for the next start and applied now. A form of this page, from a signed-in browser.
+            case "/tailnet/turn" when post && tailnet?.Turn is { } turn:
+            {
+                var on = form!["do"] == "on";
+                var made = turn(on);
+                log($"server page tailnet turn on={(on ? "yes" : "no")} outcome={(made ? "done" : "failed")}");
+                Redirect(context.Response, made ? "/#tailnet" : "/?done=tailnet_turn_failed#tailnet");
+                return;
+            }
+            case "/tailnet/turn":
+                Redirect(context.Response, "/");
+                return;
             case "/tailnet/signout":
             {
                 string Ask(string? problem) => AskBody("/tailnet/signout", token,

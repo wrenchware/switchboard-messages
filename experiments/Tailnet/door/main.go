@@ -15,7 +15,8 @@
 // server's own page shows, in one "tailnet page" line the server keeps in memory for the page and never logs (page.go). Tailscale's own
 // log is off (init): nothing is uploaded, and its files in the state folder stay empty. The door ends when its standard
 // input ends (the server stopping),
-// and on Linux with the server however it ends (parentwatch_linux.go). With --authkey-stdin the first line of that input
+// and on Linux with the server however it ends (parentwatch_linux.go); on Windows the server keeps it in its helpers' job,
+// which ends it with the server, and its node's keys are sealed to the user (store_windows.go). With --authkey-stdin the first line of that input
 // is a Tailscale auth key for a headless sign-in (MESSAGES_TAILNET_AUTHKEY, readAuthKey), so the key is in no argument
 // and no environment. A later "logout" line signs the node out and ends the door with forgetCode (commands). A node that
 // Tailscale signs out while it runs asks for a new sign-in link by itself (needsLink).
@@ -132,7 +133,13 @@ func run(state, socket, hostname string, port int, authKey string, input io.Read
 	discard := func(string, ...any) {}
 	// The auth key, when the server was given one, is used only while the node has no identity of its own yet; a node
 	// already signed in ignores it. A tagged key makes a tagged node, which turns the same-user check off (relay.go).
-	server := &tsnet.Server{Dir: state, Hostname: hostname, AuthKey: authKey, Logf: discard, UserLogf: discard}
+	// On Windows the node's keys are sealed to the user (store_windows.go); elsewhere tsnet's own file in the state folder.
+	store, err := newStateStore(state)
+	if err != nil {
+		say("tailnet start failed reason=state")
+		return 1
+	}
+	server := &tsnet.Server{Dir: state, Store: store, Hostname: hostname, AuthKey: authKey, Logf: discard, UserLogf: discard}
 	if authKey != "" {
 		say("tailnet authkey=given")
 	}

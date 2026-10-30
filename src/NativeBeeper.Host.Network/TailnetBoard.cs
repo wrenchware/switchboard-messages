@@ -68,7 +68,23 @@ internal sealed class TailnetBoard(bool enabled, int port = NativeBeeper.Protoco
 {
     private volatile TailnetView? latest;
 
-    public bool Enabled { get; } = enabled;
+    private volatile bool enabled = enabled;
+
+    public bool Enabled => enabled;
+
+    /// <summary>
+    /// The door turned on or off from the page, on a host that can (the Windows server, SWITCHBOARD.md 10.7: it keeps the choice in <c>Server\network.json</c> and starts
+    /// or stops the door at once); null where it is a setting of the install (Docker's <c>MESSAGES_TAILNET</c>), which the page then explains instead. False when
+    /// the change could not be made.
+    /// </summary>
+    public Func<bool, bool>? Turn { get; set; }
+
+    /// <summary>Said by the host that turns the door on or off (<see cref="Turn"/>).</summary>
+    public void SetEnabled(bool on)
+    {
+        enabled = on;
+        if (!on) latest = null;
+    }
 
     /// <summary>The port devices reach the server on through the door.</summary>
     public int Port { get; } = port;

@@ -27,19 +27,22 @@ public static class Program
         // Before the lease, the log and the marker: a quit is a visitor, and must not replace the log of the server it is asking.
         if (options.Quit) return Quit();
 
-        // The app does not take the host lease yet, so on the real data (the installed app's accounts) nothing stops a window and this server from
-        // both running the providers: the window can start after the check below, the check and the lease are not one step, the window relaunches itself
-        // through a gap, and its mutex is per Windows session. The real data is the default root, and also that folder named in NATIVEBEEPER_DATA_ROOT,
-        // which would otherwise pass as a scratch root with a suffixed mutex the running app never holds (review, 2026-10-08). So is a junction or link to it, or to a folder above it (IsRealData compares the paths as the file system resolves them, and one it cannot resolve is the real data). SWITCHBOARD.md 3.2b
-        // removes this refusal, and only together with the app taking HostLease (a harness check fails if one happens without the other). It reads
-        // and writes nothing there, not even its refusal: that folder is the installed app's, and only the exit code says why.
-        if (!AppPaths.IsScratch) return 3;
+        // The real data (the installed app's accounts) is served only once the window has made this PC's own server its host (SWITCHBOARD.md 10.7, the lift of
+        // 3.2b, owner D13 2026-10-30): the window takes HostLease whenever it hosts, so the lease keeps the two apart, and the move marker says the switch was made
+        // (MoveMarker.ServerMayOpen). While the switch is under way only the window's own offline start for the move may open it; a start that connects accounts (a
+        // restore, the sign-in Run value) waits for the switch to be confirmed. The real data is the default root, and also that folder named in NATIVEBEEPER_DATA_ROOT
+        // (review, 2026-10-08), or a junction or link to it, or to a folder above it (IsRealData compares the paths as the file system resolves them, and one it cannot
+        // resolve is the real data). On a root that was never switched it reads the marker and nothing else, writes nothing, not even its refusal: that folder is the
+        // installed app's, and only the exit code says why. A harness check fails if this ever opens a root without the app taking HostLease.
+        if (!AppPaths.IsScratch && !MoveMarker.ServerMayOpen(AppPaths.DataRoot, options.Connects)) return 3;
         // Before the first line of any log, the refusals included: the app's choice to record nothing is the server's too.
         ServerPreferences.Apply();
         // A window that hosts holds the host lease (3.2b), so the lease below refuses then. This older check stays for a window that does not take the
         // lease (a build from before 3.2b), except for the window that started this server as its owner: that one is a client (NATIVEBEEPER_PROTOCOL=local)
         // and holds the data mutex as every window does.
-        if (AppRunning() && !OwnerIsWindow(options.OwnerPid)) return Refused("app_running");
+        // A root that runs its own server has a window that is always its client (it never hosts there without the lease, which this start then finds held), and
+        // both are started at sign-in, in either order.
+        if (AppRunning() && !OwnerIsWindow(options.OwnerPid) && !MoveMarker.RunsOwnServer(MoveMarker.Read(AppPaths.DataRoot))) return Refused("app_running");
         // Before the log: a refused start must not replace the log of the server that holds the lease.
         using var lease = HostLease.TryAcquire(AppPaths.DataRoot);
         if (lease is null) return Refused("host_locked");
@@ -71,7 +74,7 @@ public static class Program
         // Asked of Windows on the pool: the process's start time costs a few milliseconds the start does not need to wait for.
         _ = Task.Run(() => AppLog.Write($"server compose step=runtime ms={(long)(entered - Process.GetCurrentProcess().StartTime).TotalMilliseconds}"));
 
-        var run = new ServerRun(options);
+        var run = new ServerRun(options, previousExit);
         var shell = new ServerShell(run, AppLog.Write);
         var code = shell.Run(() => run.Start(shell));
         FlushLogs();

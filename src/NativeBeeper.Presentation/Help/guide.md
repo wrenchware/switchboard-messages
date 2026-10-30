@@ -599,6 +599,7 @@ To tell them after all: **Send read receipt** in the conversation menu, **Mark r
 - Click the tray icon to open Messages. Its tooltip says "Messages · 3 unread conversations".
 - The tray menu: **Open Messages**, up to five unread conversations (and "N more unread…"), **New chat**, **Open console**, **Pause notifications** (or Resume), **Settings** and **Quit Messages**.
 - Quitting with unsaved text asks "Keep your unsaved messages?"; Messages won't quit in the middle of a send.
+- On a PC that runs its own Messages Server (see [This PC's own Messages Server](#own-server)), the menu also has **Open server page**, and **Stop Messages Server** after **Quit Messages**. **Quit Messages** closes Messages only: the server keeps your accounts connected and keeps reaching your phone. **Stop Messages Server** closes Messages, then the server, once nothing is still sending.
 
 ### The taskbar {#taskbar}
 
@@ -807,6 +808,17 @@ A Messages Server that has a browser of its own signs your accounts in there, so
 - **Messenger and Instagram** wait for you: choose **Done** once the service has finished with you (it may still ask whether to trust the browser, or for a code). The server then closes its browser, checks the sign-in and connects the account; Messenger turns on encrypted conversations by itself, as on this PC. If you choose Done too early, Settings says the sign-in didn't finish: choose **Connect** to start again.
 - **Cancel**, or closing the window, stops the sign-in, and the server keeps nothing of it. Each Messenger or Instagram sign-in uses a fresh, empty browser on the server that is deleted afterwards. Instagram's inbox stays blocked in it, so nothing is marked read.
 - A server without a browser of its own (a Windows server, or an older one) opens this PC's own sign-in window instead, as before.
+
+### This PC's own Messages Server {#own-server}
+
+A Windows PC can be its own Messages Server: the server runs as you, starts when you sign in to Windows, and Messages is its client like your phone is. It keeps Google signed in and your accounts connected even while the Messages window is closed.
+
+- **Switching.** Once a version of Messages turns this on, a PC that runs Messages on its own switches by itself the next time Messages opens: it first copies what the server will use into the `Backups` folder of the Messages data folder, then moves your choices onto the server, which signs in with the same accounts already on this PC (nothing to sign in again). If anything is scheduled or still sending, it waits for a later launch. If it can't switch, Messages runs as before and says so once.
+- **Starting.** The server starts when you sign in to Windows (it appears as "Messages Server" in Task Manager's Startup apps, where you can turn it off). **Start with Windows** still starts Messages itself in the tray, which is what shows your notifications.
+- **Quitting.** **Quit Messages** in the tray closes Messages only. **Stop Messages Server** closes both.
+- **Its page.** **Open server page** in the tray, or in **Settings → Accounts → Messages Server** (which says this PC runs its own server, at `127.0.0.1`), opens the server's page in your browser, already signed in. Your browser warns that the page's certificate isn't one it knows, because the server makes its own; it's on this PC only. The page is where phones join (approve requests and remove devices there), where Tailscale is turned on or off, and where notifications and backups are set up. **Connect** on its Accounts card opens the service's own sign-in in Messages.
+- **Backups.** The server backs up once a day into the folder you choose in the page's **Backups** card: any folder on this PC, a mapped drive, a network share like `\\nas\backups`, or a OneDrive folder. A PC that already backed up keeps its folder and password.
+- **Your phone** reaches the server through Tailscale once the server's door on your Tailscale network is turned on.
 
 ### Notifications {#settings-notifications}
 

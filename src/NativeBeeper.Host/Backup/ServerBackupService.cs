@@ -30,7 +30,8 @@ internal sealed class ServerBackupService : IServerBackup
 
     private readonly ServerBackupPaths paths;
     private readonly IStateProtector protector;
-    private readonly string? folder;
+    // The host's mapping on Linux, fixed for the run; on Windows the person's choice, which ChooseFolder changes (volatile: read by the schedule and the page).
+    private volatile string? folder;
     private readonly IServerBackupMessenger? messenger;
     private readonly string app;
     private readonly Action<string> log;
@@ -73,6 +74,50 @@ internal sealed class ServerBackupService : IServerBackup
 
     public string? Folder => folder;
     public ServerBackupPaths Paths => paths;
+
+    /// <summary>
+    /// Where the person's choice of folder is kept, on a host whose folder is that choice (the Windows server, SWITCHBOARD.md 10.7, D7: any folder its user can write
+    /// to, a mapped drive, <c>\\nas\share</c> or OneDrive included); null on a host whose folder is its mapping (Docker's <c>/backups</c>), which the page cannot change.
+    /// </summary>
+    public string? FolderChoiceFile { get; init; }
+
+    /// <summary>The folder kept in <paramref name="file"/>, or null when there is none (or it cannot be read).</summary>
+    public static string? ReadFolderChoice(string file)
+    {
+        try
+        {
+            if (!File.Exists(file) || new FileInfo(file).Length > 4096) return null;
+            var text = File.ReadAllText(file).Trim();
+            return text.Length > 0 && Path.IsPathFullyQualified(text) ? text : null;
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    /// <summary>
+    /// Backups go to <paramref name="chosen"/> from the next one on: a full path to a folder that is there now (the server never makes one, as a share that is not
+    /// mounted would otherwise fill the PC's own disk). Kept for the next start. Answers <c>chosen</c>, or with nothing changed why not: <c>fixed</c> (this host's folder
+    /// is its mapping), <c>not_full</c>, <c>missing</c> or <c>unsaved</c>.
+    /// </summary>
+    public string ChooseFolder(string? chosen)
+    {
+        if (FolderChoiceFile is not { } file) return "fixed";
+        chosen = chosen?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(chosen) || chosen.Length > 1024 || !Path.IsPathFullyQualified(chosen)) return "not_full";
+        try
+        {
+            chosen = Path.TrimEndingDirectorySeparator(Path.GetFullPath(chosen));
+            if (!Directory.Exists(chosen)) return "missing";
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            var temporary = file + ".tmp";
+            File.WriteAllText(temporary, chosen);
+            File.Move(temporary, file, overwrite: true);
+        }
+        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return "unsaved"; }
+        folder = chosen;
+        Update(current => current);
+        log("server backup folder chosen");
+        return "chosen";
+    }
     public bool HasPassword => File.Exists(paths.BackupPassword);
     public bool IsBusy => busy;
     public BackupSettings Settings { get { lock (gate) return settings; } }

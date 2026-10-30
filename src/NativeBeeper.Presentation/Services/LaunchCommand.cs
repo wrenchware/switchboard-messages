@@ -2,11 +2,20 @@ namespace NativeBeeper.Presentation.Services;
 
 // Settings and Unread are never parsed from a command line: the shell uses them to bring Messages forward on a screen
 // (the tray menu, the console). Appended, so the parsed three keep their values.
-public enum LaunchAction { NewChat, Search, OpenChat, Settings, Unread }
+public enum LaunchAction { NewChat, Search, OpenChat, Settings, Unread, SignIn }
 
-// Command-line actions used by the taskbar jump list. A running app receives them through activation redirection.
-public sealed record LaunchCommand(LaunchAction Action, string? ChatId = null)
+// Command-line actions used by the taskbar jump list. A running app receives them through activation redirection. SignIn is the PC's own Messages Server asking
+// for an account's native sign-in window (SWITCHBOARD.md 10.7: Connect on its page on this PC); Service names the account by the server's own word.
+public sealed record LaunchCommand(LaunchAction Action, string? ChatId = null, string? Service = null)
 {
+    private const string SignInPrefix = "--sign-in=";
+
+    /// <summary>The services a sign-in can be asked for, by the server's words (ServerAccountProviders).</summary>
+    public static readonly IReadOnlyList<string> SignInServices = ["google-messages", "messenger", "instagram", "google-voice"];
+
+    public static string SignInArgument(string service)
+        => SignInServices.Contains(service) ? SignInPrefix + service : throw new ArgumentException("Unsupported service.", nameof(service));
+
     public const string NewChatArgument = "--new-chat";
     public const string SearchArgument = "--search";
     private const string OpenChatPrefix = "--open-chat=";
@@ -56,6 +65,8 @@ public sealed record LaunchCommand(LaunchAction Action, string? ChatId = null)
             if (argument == SearchArgument) return new(LaunchAction.Search);
             if (argument.StartsWith(OpenChatPrefix, StringComparison.Ordinal) && argument[OpenChatPrefix.Length..] is var id && IsChatId(id))
                 return new(LaunchAction.OpenChat, id);
+            if (argument.StartsWith(SignInPrefix, StringComparison.Ordinal) && argument[SignInPrefix.Length..] is var service && SignInServices.Contains(service))
+                return new(LaunchAction.SignIn, Service: service);
         }
         return null;
     }

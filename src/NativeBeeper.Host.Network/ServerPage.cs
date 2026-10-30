@@ -271,7 +271,7 @@ internal sealed partial class ServerPage
 
     /// <summary>Whether a request is one of the page's (any other path stays the door's 404).</summary>
     public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push"
-        or "/push/test" or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path);
+        or "/push/test" or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path) || IsDesktopPath(path);
 
     /// <summary>The page's logo, shown before signing in too (it is the app's own icon, nothing of the server's).</summary>
     public const string LogoPath = "/logo.png";
@@ -318,6 +318,8 @@ internal sealed partial class ServerPage
         // Read from the cookie alone, before any body: the upload's larger limit is for a signed-in browser only, so nobody else can hold one of the door's
         // places for minutes dripping 64 KiB (review, 2026-10-17).
         var session = Session(request);
+        // A signed-in browser on the Windows server's own PC is not asked for the password again, so its forms leave the field out (ServerPage.Desktop.cs).
+        if (session is not null && DesktopTrust && OnThisPc(context)) context.Items[DesktopItem] = true;
         IFormCollection? form = null;
         if (post)
         {
@@ -351,6 +353,8 @@ internal sealed partial class ServerPage
             if (session is not null) { Redirect(response, "/"); return; }
             if (get)
             {
+                // Messages opening its own server's page on this PC (ServerPage.Desktop.cs).
+                if (TryOnceSignIn(context)) return;
                 // A sign-out the server could not keep is said, so the owner knows a restart would undo it.
                 var unsaved = request.Query["signed_out"] == "unsaved" ? "Signed out, but the server couldn't save it, so starting the server again would undo it. Change the password to sign every browser out for good." : null;
                 await PageAsync(context, StatusCodes.Status200OK, "Sign in", SignInBody(unsaved)).ConfigureAwait(false);
@@ -431,6 +435,9 @@ internal sealed partial class ServerPage
             case { } walkthrough when IsSetupPath(walkthrough):
                 await WalkthroughAsync(context, walkthrough, form, token).ConfigureAwait(false);
                 return;
+            case "/signin/desktop" when post:
+                DesktopSignInPost(context, form!);
+                return;
             case { } door when IsTailnetPath(door):
                 await TailnetAsync(context, door, form, token).ConfigureAwait(false);
                 return;
@@ -468,6 +475,7 @@ internal sealed partial class ServerPage
     // one try and the rest are told to wait. Wrong and paced tries are logged the first time and then one in a hundred, so guessing cannot fill the server's log.
     private Try CheckPassword(HttpContext context, string presented, string purpose)
     {
+        if (TrustedHere(context, purpose)) return Try.Right;
         var source = PairingCodes.Key(context.Connection.RemoteIpAddress);
         var now = time.GetUtcNow();
         DateTimeOffset claimed;
@@ -688,6 +696,8 @@ internal sealed partial class ServerPage
             "backup_busy" => "A backup is already running, or there's no password yet.",
             "backup_checking" => "Reading the latest backup back now. Reload in a minute to see what it found.",
             "backup_password" => "The backup password is set. Keep it safe: without it the backups can't be read.",
+            "desktop_sign_in" => "The sign-in opened in Messages on this PC.",
+            "desktop_sign_in_failed" => "Messages couldn't be opened on this PC to sign in. Open it from the Start menu and connect the account in Settings.",
             _ => TailnetNotice(done),
         };
         if (said is not null) body.Append(Notice(said));
@@ -753,6 +763,8 @@ internal sealed partial class ServerPage
             body.Append("</ul>");
             body.Append("<p class=\"quiet\">Accounts are removed in Messages, from Manage server on the PC that manages the server.</p>");
         }
+        // The Windows server, in a browser on its own PC: Connect opens the native sign-in on the desktop (ServerPage.Desktop.cs).
+        DesktopSignInForms(body, request.HttpContext, token);
         body.Append("</section>");
 
         if (backups is not null) await BackupsCardAsync(body, token, cancellationToken).ConfigureAwait(false);
@@ -994,7 +1006,7 @@ internal sealed partial class ServerPage
         var html = $"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex\">"
             + (refresh is { } seconds ? $"<meta http-equiv=\"refresh\" content=\"{seconds};url={Html(refreshTo)}\">" : "")
             + $"<link rel=\"icon\" href=\"{LogoPath}\"><title>{Html(title)}</title><style>{Style}{SetupStyle}</style></head><body><main>"
-            + $"<header><img src=\"{LogoPath}\" alt=\"\"><h1>{Html(title)}</h1>{(badge is null ? "" : $"<span class=\"pill\">{Html(badge)}</span>")}</header>{body}</main></body></html>";
+            + $"<header><img src=\"{LogoPath}\" alt=\"\"><h1>{Html(title)}</h1>{(badge is null ? "" : $"<span class=\"pill\">{Html(badge)}</span>")}</header>{WithoutPasswordAgain(context, body)}</main></body></html>";
         return response.WriteAsync(html, Encoding.UTF8, context.RequestAborted);
     }
 

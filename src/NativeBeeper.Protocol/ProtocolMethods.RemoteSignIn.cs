@@ -19,18 +19,59 @@ namespace NativeBeeper.Protocol;
 //   accounts.voice.remoteSignIn        As accounts.google.remoteSignIn, for a Voice account: the host's Chrome is started on a new Chrome profile of that account's own and, when the
 //                                      person is signed in to Voice, the host reads the cookies, adds the account (the profile is kept for its renewals) and answers Done. No emoji
 //                                      are sent. What the browser shows is `signInView`, and what the person does goes by accounts.google.remoteSignInInput: one window, one at a time.
+//
+// Protocol 27 (SWITCHBOARD.md stage 10, 10.5) makes it one method for any service:
+//
+//   accounts.remoteSignIn              {service: google|voice|messenger|instagram}. Google and Voice run as their own methods above do. Messenger and Instagram sign in in the server's Chrome
+//                                      on a throwaway profile at the service's login page; the person says when they are finished with a `done` input (RemoteSignIn.DoneKind) through the same
+//                                      input method; the host closes that Chrome so its cookie file is whole, reads the cookies the PC's own window would have kept, deletes the profile and
+//                                      connects the account as accounts.<service>.connect does (Messenger then turns its encrypted conversations on, once). The answer is a
+//                                      RemoteSignInResult: the conversations that joined and, for Messenger, how the encrypted step went. A failure is a fixed word, as the connect's own.
+//                                      Nothing is retried: a sign-in that failed is started again by the person.
 public static partial class ProtocolMethods
 {
     public const string RemoteSignInMethod = "accounts.google.remoteSignIn";
     public const string RemoteSignInInputMethod = "accounts.google.remoteSignInInput";
     public const string VoiceRemoteSignInMethod = "accounts.voice.remoteSignIn";
+    public const string ServerSignInMethod = "accounts.remoteSignIn";
 
     private static Entry[] RemoteSignInEntries() =>
     [
         new(RemoteSignInMethod, "IRemoteSignInHost.SignInAsync", typeof(RemoteSignInParams), typeof(Done), true),
         new(RemoteSignInInputMethod, "IRemoteSignInHost.InputAsync", typeof(RemoteSignInInputParams), typeof(Done)),
         new(VoiceRemoteSignInMethod, "IRemoteSignInHost.SignInAsync (Google Voice)", typeof(VoiceRemoteSignInParams), typeof(Done), true),
+        new(ServerSignInMethod, "IRemoteSignInHost.SignInAsync / IRemoteCookieSignInHost.SignInAsync", typeof(ServerSignInParams), typeof(RemoteSignInResult), true),
     ];
+}
+
+/// <summary>The services <see cref="ProtocolMethods.ServerSignInMethod"/> names (protocol 27).</summary>
+public static class RemoteSignInServices
+{
+    public const string Google = "google", Voice = "voice", Messenger = "messenger", Instagram = "instagram";
+
+    public static bool Known(string? service) => service is Google or Voice or Messenger or Instagram;
+
+    /// <summary>Whether the service's sign-in ends when the person says so (<see cref="RemoteSignIn.DoneKind"/>) and the host then reads its cookies, rather than when the host sees it signed in.</summary>
+    public static bool EndsWithDone(string? service) => service is Messenger or Instagram;
+}
+
+/// <summary>
+/// Starts a sign-in in the server's browser for <paramref name="Service"/> (<see cref="RemoteSignInServices"/>). <paramref name="AsNewDevice"/> is Google Messages' alone; <paramref name="Width"/> and
+/// <paramref name="Height"/> are as <see cref="RemoteSignInParams"/>'s.
+/// </summary>
+public sealed record ServerSignInParams(string ClientOpId, string Service, bool AsNewDevice = false, int Width = 0, int Height = 0) : MutationParams(ClientOpId);
+
+/// <summary>
+/// How a sign-in in the server's browser ended (protocol 27). <paramref name="Conversations"/>: the conversations that joined (Messenger and Instagram; 0 for Google and Voice). <paramref name="Encrypted"/>:
+/// Messenger's encrypted conversations after the sign-in: <see cref="RemoteSignInEncryption.On"/>, <see cref="RemoteSignInEncryption.AlreadyOn"/>, or a fixed failure word (the registration's own code, or
+/// the type of what stopped it); null for every other service.
+/// </summary>
+public sealed record RemoteSignInResult(int Conversations = 0, string? Encrypted = null);
+
+/// <summary>The words of <see cref="RemoteSignInResult.Encrypted"/> that are not a failure.</summary>
+public static class RemoteSignInEncryption
+{
+    public const string On = "on", AlreadyOn = "already_on";
 }
 
 /// <summary>Starts a Google Voice sign-in in the server's browser. <paramref name="Width"/> and <paramref name="Height"/> are as <see cref="RemoteSignInParams"/>'s.</summary>
@@ -88,7 +129,14 @@ public sealed record RemoteSignInRequest(object Owner, string ClientOpId, bool A
 public static class RemoteSignIn
 {
     public const string Mouse = "mouse", Key = "key", Text = "text", Resize = "resize";
+    /// <summary>The person says a Messenger or Instagram sign-in is finished (protocol 27). A host ignores it in a sign-in that ends by itself (Google's), and a host below 27 never gets one.</summary>
+    public const string DoneKind = "done";
     public const string FrameKind = "frame", SignedInKind = "signedIn";
+    /// <summary>
+    /// What a Messenger or Instagram sign-in reports as progress (protocol 27), in place of Google's emoji: the browser is closed and the account is being connected, then (Messenger) its encrypted
+    /// conversations are being turned on.
+    /// </summary>
+    public const string ConnectingProgress = "connecting", EncryptingProgress = "encrypting";
     /// <summary>The most input events one call carries, and the most characters one text event carries.</summary>
     public const int MaxEvents = 64, MaxTextCharacters = 4096;
     /// <summary>The longest picture the host sends, as base64 (about 512 KiB of JPEG); a bigger one is not sent.</summary>
@@ -123,4 +171,28 @@ public interface IRemoteSignInOutput
 {
     void Frame(RemoteSignInFrame frame);
     void SignedIn();
+}
+
+/// <summary>
+/// A sign-in in the host's own browser whose result is the service's cookies (protocol 27: Messenger and Instagram), made on a throwaway profile and read when the person says they are done. A host
+/// without one (every host but the Linux server with its own Chrome) leaves it null, and those services answer <c>not_supported</c> on <see cref="ProtocolMethods.ServerSignInMethod"/>.
+/// <para>
+/// The session is held by <see cref="RemoteSignInRequest.Owner"/>, any object: the dispatcher gives its connection, and another face of the same flow (the server page's own socket, 10.6) gives its
+/// own object and its own <see cref="IRemoteSignInOutput"/>, and calls <see cref="RemoteSignInFinish.ConnectAsync"/> with the cookies, exactly as the dispatcher does.
+/// </para>
+/// </summary>
+public interface IRemoteCookieSignInHost
+{
+    /// <summary>Whether this host signs <paramref name="service"/> in (<see cref="RemoteSignInServices.Messenger"/> or <see cref="RemoteSignInServices.Instagram"/>).</summary>
+    bool Offers(string service);
+
+    /// <summary>
+    /// Runs the browser part to its end and returns the cookies the service's own sign-in window would have kept, the required ones among them; the caller owns and clears them. Failures are
+    /// fixed words as <see cref="InvalidOperationException"/>: <c>sign_in_busy</c>, <c>sign_in_timeout</c>, <c>sign_in_browser</c>, <c>missing_cookies</c> (the person chose Done before the
+    /// service had signed them in).
+    /// </summary>
+    Task<Dictionary<string, string>> SignInAsync(string service, RemoteSignInRequest request, IRemoteSignInOutput output, CancellationToken cancellationToken);
+
+    /// <summary>As <see cref="IRemoteSignInHost.InputAsync"/>; a <see cref="RemoteSignIn.DoneKind"/> event says the person is finished.</summary>
+    Task InputAsync(object owner, IReadOnlyList<RemoteSignInInput> events, CancellationToken cancellationToken);
 }

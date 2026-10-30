@@ -89,6 +89,8 @@ public static class Program
             HelperConnection.Allowed = name => UnavailableProviders.Runs(name) || name == LinuxGoogle.Helper;
             // Google Voice's helper too, but only beside the server's own Chrome, which signs Voice in and renews it (SWITCHBOARD.md 5.4).
             if (google.VoiceRuns) { var allowed = HelperConnection.Allowed; HelperConnection.Allowed = name => allowed(name) || name == LinuxGoogle.VoiceHelper; }
+            // Messenger's and Instagram's sign-in profiles are never kept: whatever a stopped server left goes (SWITCHBOARD.md 10.5).
+            ThrowawayChromeProfile.Sweep(google.SignInProfilesRoot, AppLog.Write);
         }
         AppLog.Write($"server started version={typeof(Program).Assembly.GetName().Version?.ToString(3)} host=linux lease=ok previous_exit={previousExit} restore={options.Restore} umask={mask}");
         // Whether each helper this host runs is beside it, said once at start: a missing one otherwise shows only when that provider is first connected.

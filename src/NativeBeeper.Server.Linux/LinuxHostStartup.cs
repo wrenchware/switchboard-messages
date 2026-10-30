@@ -160,7 +160,9 @@ internal sealed partial class LinuxHostStartup : IDisposable
             // Every conversation kept whole (SWITCHBOARD.md stage 8, protocol 24): history.db beside the other stores, sealed under the state key like them.
             WholeHistory: new NativeBeeper.Storage.HistoryDatabase(Path.Combine(root, "history.db"), protector),
             // Its status to every device, Back up now and its password to the owner (protocol 26).
-            Backup: backup));
+            Backup: backup,
+            // Messenger and Instagram signed in in the server's own Chrome too (protocol 27, SWITCHBOARD.md 10.5), wherever Google's sign-in in it is offered.
+            MetaRemoteSignIn: remoteSignIn.Meta));
         built = host;
         // Each change in how the backup stands is a signal in the host's sequence, so a client of 26 reads the status again.
         backup.Changed += status => host.Services.Events?.AppendSignal(new AccountSignal(AccountSignals.Backup, !status.Stale));

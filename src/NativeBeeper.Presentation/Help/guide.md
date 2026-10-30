@@ -34,6 +34,8 @@ Open **Settings** (<kbd>Ctrl+,</kbd>). It opens on **Accounts**, where each serv
 - **Instagram**: choose **Connect** and sign in with your Instagram username and password. *Log in with Facebook* isn't supported.
 - **Google Voice**: choose **Add Google Voice account** and sign in at voice.google.com. Add more numbers with **Add another Google Voice account**; each signs in separately.
 
+When Messages uses a Messages Server with a browser of its own, these sign in through that browser instead; see [Signing in on the server](#server-sign-in).
+
 Each service's details, limits and fixes are in [What each service can do](#services).
 
 ### Your first run {#first-run}
@@ -783,7 +785,7 @@ The move refuses, and changes nothing, while the server has a Messenger or Insta
 
 **If a move stops half way** (the PC lost power, or the server stopped answering), Messages offers to finish a move to the server the next time it opens, and **Move back to this PC…** finishes a move back when you choose it again. Should neither be offered, press Windows+R and run `Messages.exe --move-to-server` to finish a move there, or `Messages.exe --move-back` to finish a move back.
 
-Only the PC paired with the server first can sign accounts in or out of it (in **Settings → Accounts**), pair Google Messages there or turn on Messenger's encrypted conversations there. Other devices read and send as usual, and are told so if they try.
+Only the PC paired with the server first can sign accounts in or out of it (in **Settings → Accounts**), pair Google Messages there or turn on Messenger's encrypted conversations there. Other devices read and send as usual, and are told so if they try. How a sign-in on the server looks is in [Signing in on the server](#server-sign-in).
 
 Moving, either way, asks first, then closes Messages the way **Quit** in the tray does (drafts are saved, and you are asked about anything still sending), does the move, tells you how it went and opens Messages again by itself. If you have scheduled messages waiting, or changes that haven't reached the server yet, the move stops and says so; nothing changes and Messages opens as it was.
 
@@ -795,6 +797,15 @@ Moving, either way, asks first, then closes Messages the way **Quit** in the tra
 - **Accounts**, each with **Remove** after a confirmation. Removing an account takes it off the server: the server signs out of it and forgets what it kept, so every device that uses the server stops showing it until it is signed in on the server again. Nothing changes at the service itself or on your phone, and your saved messages stay. For Messenger, the server would join as a new device if you signed in there again. Google Messages is removed by unpairing the server on your phone (Google Messages → Device pairing). An account in an unfinished move can't be removed there. Once **Move back to this PC…** finishes, **Remove** can forget the server's moved-away copy; the account and its saved messages on this PC stay as they are.
 
 The server also has a page of its own, for a browser on your home network, once a password is set for it when the server is installed: open `https://` and the server's address with port 8787. It shows the devices waiting to join (approving one asks for the password again), the server's version and its address and fingerprint, its accounts and devices, removes a device (useful when the PC that managed the server is gone), and makes a pairing code. **Pause requests** on that page stops requests to join, including those already waiting, until you choose **Allow requests**. The pause survives a server restart; paired devices and pairing codes still work. A device denied or abandoned must wait five minutes before asking again.
+
+### Signing in on the server {#server-sign-in}
+
+A Messages Server that has a browser of its own signs your accounts in there, so the sign-in belongs to the server rather than to this PC. **Pair** (Google Messages), **Add Google Voice account**, and **Connect** for Messenger and Instagram then open that browser in a window here, headed "This is Messages Server's own browser". You sign in on the service's own page as you would anywhere.
+
+- **Google Messages and Google Voice** finish by themselves once you're signed in; the window can stay up to half a minute longer while the server notices.
+- **Messenger and Instagram** wait for you: choose **Done** once the service has finished with you (it may still ask whether to trust the browser, or for a code). The server then closes its browser, checks the sign-in and connects the account; Messenger turns on encrypted conversations by itself, as on this PC. If you choose Done too early, Settings says the sign-in didn't finish: choose **Connect** to start again.
+- **Cancel**, or closing the window, stops the sign-in, and the server keeps nothing of it. Each Messenger or Instagram sign-in uses a fresh, empty browser on the server that is deleted afterwards. Instagram's inbox stays blocked in it, so nothing is marked read.
+- A server without a browser of its own (a Windows server, or an older one) opens this PC's own sign-in window instead, as before.
 
 ### Notifications {#settings-notifications}
 

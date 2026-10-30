@@ -8,7 +8,7 @@ public sealed record HostStatePorts(IProviderConnectionState Connections, IMessa
     IAttachmentBatchBackend Batches, IMessageActions Actions, IFirstMessageStarter FirstMessage, IGroupManagement Groups, IMessengerAccount Messenger,
     IInstagramAccount Instagram, IGoogleMessagesAccount Google, IGoogleVoiceAccounts Voice, ITypingService? Typing = null, IHostIdentity? Identity = null,
     bool GoogleAbsent = false, bool VoiceAbsent = false, bool InstagramAbsent = false, bool UnarchivesChats = false, bool FiresScheduled = false, bool RemoteGoogleSignIn = false, bool QrPairing = false,
-    Func<bool>? ChromeOutOfDate = null, bool RemoteVoiceSignIn = false);
+    Func<bool>? ChromeOutOfDate = null, bool RemoteVoiceSignIn = false, bool RemoteMessengerSignIn = false, bool RemoteInstagramSignIn = false);
 
 /// <summary>
 /// Reads a <see cref="HostState"/> from the real ports. It asks the ports themselves, not a copy of their rules, so the state says
@@ -27,7 +27,8 @@ public sealed class HostStateBuilder(HostStatePorts ports, int batchItemLimit)
         scopes.AddRange(keys.Select(key => Scope(ProviderScopes.Voice(key))));
         return new HostState(scopes, ports.Messenger.State, ports.Instagram.State, ports.Google.State, [.. ports.Voice.Accounts], keys,
             new HostLimits(ports.Actions.HasLocalActionOptions, ports.FirstMessage.MaxFirstMessageLength, ports.Groups.GroupNameMaximum, ports.Groups.AddMaximum, batchItemLimit,
-                ports.GoogleAbsent, ports.VoiceAbsent, ports.InstagramAbsent, ports.UnarchivesChats, ports.FiresScheduled, ports.RemoteGoogleSignIn, ports.QrPairing, ports.ChromeOutOfDate?.Invoke() == true, ports.RemoteVoiceSignIn),
+                ports.GoogleAbsent, ports.VoiceAbsent, ports.InstagramAbsent, ports.UnarchivesChats, ports.FiresScheduled, ports.RemoteGoogleSignIn, ports.QrPairing, ports.ChromeOutOfDate?.Invoke() == true, ports.RemoteVoiceSignIn,
+                ports.RemoteMessengerSignIn, ports.RemoteInstagramSignIn),
             new TypingState(ports.Typing?.CanReceive ?? false, ports.Typing?.CanSend ?? false), new AccountRevisions(), Identity());
     }
 

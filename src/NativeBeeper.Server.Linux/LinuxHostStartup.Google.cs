@@ -45,16 +45,19 @@ internal sealed partial class LinuxHostStartup
     // itself and a profile seeded from cookies (ProfileKeepingGoogleAccount) would replace it. Null when the host has no headed browser; the client then signs in as it did.
     // With the server's own Chrome the same window signs a Google Voice account in too (protocol 15): one object serves both, so only one sign-in runs at a time, and the Voice one adds the account
     // to the real accounts (voicePort), never through the port that refuses a client's cookies.
-    private static (IRemoteSignInHost? Messages, IRemoteSignInHost? Voice) RemoteSignIn(LinuxGoogle? withGoogle, IGoogleMessagesAccount? account, IGoogleVoiceAccounts voicePort, Action<string> log)
+    // Messenger and Instagram too (protocol 27, SWITCHBOARD.md 10.5), in the same Chrome and window on a throwaway profile each time: the same object again, so a Meta sign-in and a Google one never
+    // run at once. Only where the server's own Chrome offers its sign-in at all; elsewhere a PC signs them in in its own window, as before.
+    private static (IRemoteSignInHost? Messages, IRemoteSignInHost? Voice, IRemoteCookieSignInHost? Meta) RemoteSignIn(LinuxGoogle? withGoogle, IGoogleMessagesAccount? account,
+        IGoogleVoiceAccounts voicePort, Action<string> log)
     {
-        if (account is null || withGoogle is null) return (null, null);
+        if (account is null || withGoogle is null) return (null, null, null);
         // Signed in by hand in the server's own Chrome, which stays running (SWITCHBOARD.md 5.4, MESSAGES_GOOGLE_CHROME=1).
         if (withGoogle.Chrome is { } chrome)
         {
             var signIn = chrome.SignIn(account, log, withGoogle.Guard);
-            return (signIn, signIn?.ForVoice(voicePort));
+            return (signIn, signIn?.ForVoice(voicePort), signIn?.ForMeta(withGoogle.SignInProfilesRoot));
         }
-        return (withGoogle.SignIn is { } launcher ? new RemoteGoogleSignIn(launcher, withGoogle.Browser, account, log, withGoogle.Guard) : null, null);
+        return (withGoogle.SignIn is { } launcher ? new RemoteGoogleSignIn(launcher, withGoogle.Browser, account, log, withGoogle.Guard) : null, null, null);
     }
 
     private CancellationTokenSource? chromeStop;

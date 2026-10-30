@@ -26,5 +26,7 @@
     <Compile Include="../../experiments/GoogleMessages/NativeBeeper.GoogleMessages.Spike/HelperRequests.cs" Link="Services/GoogleMessages/HelperRequests.cs" />
     <Compile Include="../../experiments/GoogleMessages/NativeBeeper.GoogleMessages.Spike/HelperCallGate.cs" Link="Services/GoogleMessages/HelperCallGate.cs" />
     <Compile Include="../../experiments/GoogleMessages/NativeBeeper.GoogleMessages.Spike/HelperJob.cs" Link="Services/GoogleMessages/HelperJob.cs" />
+    <!-- What the Instagram sign-in keeps, shared by the PC's own window and the server's Chrome (SWITCHBOARD.md 10.5). -->
+    <Compile Include="../../experiments/Instagram/NativeBeeper.Instagram.Spike/InstagramSignInRules.cs" Link="Services/Instagram/InstagramSignInRules.cs" />
   </ItemGroup>
 </Project>

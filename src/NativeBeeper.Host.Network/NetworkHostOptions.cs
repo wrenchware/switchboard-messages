@@ -88,6 +88,12 @@ internal sealed record NetworkHostOptions(string DataFolder, IStateProtector Pro
     /// <summary>What the transports the page makes send through: the harness's stand-in for Google; null for the network.</summary>
     internal HttpMessageHandler? PushHandler { get; init; }
 
+    /// <summary>The server's backup, restore and reset as its page offers them (SWITCHBOARD.md stage 10); null shows no Backups card. Its stale notice goes to the phones' pushes.</summary>
+    internal ServerPageBackups? Backups { get; init; }
+
+    /// <summary>The record of the restore this server was made from, when it was (<see cref="NativeBeeper.Host.Backup.RestoredMark"/>): an unknown token is then told so.</summary>
+    internal NativeBeeper.Host.Backup.RestoredMark? Restored { get; init; }
+
     // A record's own text prints every member, the password with them: this one names only what is safe to see.
     public override string ToString() => $"NetworkHostOptions {{ BindAddress = {BindAddress}, Port = {Port}, Page = {(PagePassword is null ? "off" : "set")}, Relay = {(RelaySocket is null ? "off" : "on")} }}";
 

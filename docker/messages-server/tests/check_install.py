@@ -84,6 +84,7 @@ class InstallerChecks(unittest.TestCase):
             env = {
                 'PATH': str(commands) + ':/usr/bin:/bin', 'CALLS': str(root / 'calls'),
                 'FAIL_AT': failure, 'MESSAGES_APPDATA': str(root / 'data & \'quoted\' "double"'),
+                'MESSAGES_BACKUPS_DIR': str(root / 'backups share'),
                 'MESSAGES_BIND_IP': '192.0.2.10', 'MESSAGES_PORT': '8788',
                 'MESSAGES_HOSTNAMES': 'server.example,192.0.2.10', 'TZ': 'Etc/UTC',
             }
@@ -151,6 +152,11 @@ class InstallerChecks(unittest.TestCase):
                 self.assertEqual(configs['TZ'], 'Etc/UTC')
                 self.assertEqual(configs['MESSAGES_HOSTNAMES'], 'server.example,192.0.2.10')
                 self.assertIn('data & \'quoted\' "double"', configs['/data'])
+                # The server's own backups: a folder of their own, mapped to /backups in the container and in its template.
+                self.assertTrue(configs['/backups'].endswith('backups share'))
+                self.assertTrue(any(arg.endswith('backups share:/backups') for arg in run))
+                self.assertNotIn('MESSAGES_TAILNET_AUTHKEY', run)
+                self.assertNotIn('MESSAGES_TAILNET_AUTHKEY', configs)
                 parameters = template.findtext('ExtraParams')
                 for flag in ['--stop-timeout=60', '--cap-drop=ALL', '--memory=5g', '--memory-swap=5g',
                              '--pids-limit=2345', '--cpus=1.5', '-p 192.0.2.10:8788:8787', 'messages-server-keys:/keys']:
@@ -161,6 +167,16 @@ class InstallerChecks(unittest.TestCase):
                     self.assertEqual('MESSAGES_CHROMIUM_NO_SANDBOX' in configs, '--chrome-sandbox' not in options)
                 else:
                     self.assertNotIn('MESSAGES_GOOGLE', configs)
+
+    def test_tailnet_auth_key_goes_by_name_and_is_never_saved(self):
+        key = 'tskey-auth-kSynthetic0CNTRL-secret'
+        result, calls, template = self.run_install('--ghcr', extra={'MESSAGES_TAILNET': '1', 'MESSAGES_TAILNET_AUTHKEY': key})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = next(call for call in calls if call[:2] == ['run', '-d'])
+        self.assertIn('MESSAGES_TAILNET_AUTHKEY', run)
+        self.assertFalse(any(key in arg for call in calls for arg in call))
+        self.assertNotIn(key, ET.tostring(template, encoding='unicode'))
+        self.assertNotIn(key, result.stdout + result.stderr)
 
     def test_default_publish_is_ipv4_only(self):
         # Without a bind address the port is published on IPv4 alone, so Docker's IPv6 proxy never hides a device's address.

@@ -342,6 +342,18 @@ internal sealed class PushNotifier : IAsyncDisposable
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>
+    /// Tells every phone signed up for notifications that the server has made no good backup for two days (stage 10): kind <c>backup</c>, with no conversation, at normal
+    /// priority. A phone built before it opens the push and shows nothing (it acts only on the kinds it knows), so it is sent as a quiet wake would be, never urgent.
+    /// Returns how many were queued.
+    /// </summary>
+    public int BackupStale()
+    {
+        var queued = registry.All().Where(device => registry.Paired(device.DeviceId)).Count(device => Enqueue(new(device.DeviceId, new PushMessage(1, "backup", ""), Urgent: false)));
+        log($"push backup queued devices={queued}");
+        return queued;
+    }
+
     private bool Enqueue(Outgoing next)
     {
         Interlocked.Increment(ref queued);

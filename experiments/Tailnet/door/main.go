@@ -15,10 +15,13 @@
 // server's own page shows, in one "tailnet page" line the server keeps in memory for the page and never logs (page.go). Tailscale's own
 // log is off (init): nothing is uploaded, and its files in the state folder stay empty. The door ends when its standard
 // input ends (the server stopping),
-// and on Linux with the server however it ends (parentwatch_linux.go).
+// and on Linux with the server however it ends (parentwatch_linux.go). With --authkey-stdin the first line of that input
+// is a Tailscale auth key for a headless sign-in (MESSAGES_TAILNET_AUTHKEY, readAuthKey), so the key is in no argument
+// and no environment.
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -29,11 +32,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"tailscale.com/client/local"
+	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/logtail"
 	"tailscale.com/tsnet"
@@ -55,15 +60,60 @@ func main() {
 	socket := flag.String("socket", "", "the server's relay socket")
 	hostname := flag.String("hostname", "messages-server", "the node's name on the tailnet")
 	port := flag.Int("port", 8787, "the port devices connect to on the tailnet")
+	keyOnInput := flag.Bool("authkey-stdin", false, "read a Tailscale auth key from the first line of standard input")
 	flag.Parse()
 	if !filepath.IsAbs(*state) || *socket == "" || !labelPattern.MatchString(*hostname) || *port < 1 || *port > 65535 || flag.NArg() != 0 {
 		say("tailnet start failed reason=arguments")
 		os.Exit(2)
 	}
-	os.Exit(run(*state, *socket, *hostname, *port, os.Stdin))
+	input := bufio.NewReaderSize(os.Stdin, maxKeyLine)
+	authKey := ""
+	if *keyOnInput {
+		key, ended := readAuthKey(input)
+		if ended {
+			// The server stopped before it said anything: nothing was started.
+			say("tailnet stopped")
+			os.Exit(0)
+		}
+		authKey = key
+	}
+	os.Exit(run(*state, *socket, *hostname, *port, authKey, input))
 }
 
-func run(state, socket, hostname string, port int, input io.Reader) int {
+// maxKeyLine bounds the auth key's line. Tailscale's keys are well under it.
+const maxKeyLine = 1024
+
+var keyPattern = regexp.MustCompile(`^tskey-[A-Za-z0-9_-]{8,500}$`)
+
+// readAuthKey takes the auth key for a headless sign-in (MESSAGES_TAILNET_AUTHKEY) from the first line of the input,
+// so it is in no argument or environment another process can read. The rest of the input is the server's stop signal
+// as before. A key that is not of Tailscale's form is dropped with a fixed word (the sign-in link is still offered);
+// ended is true when the input ended before a whole line came.
+func readAuthKey(input *bufio.Reader) (key string, ended bool) {
+	line, err := input.ReadSlice('\n')
+	if err == bufio.ErrBufferFull {
+		// Too long to be a key: drop the rest of the line, keep the input for the stop.
+		for err == bufio.ErrBufferFull {
+			_, err = input.ReadSlice('\n')
+		}
+		if err != nil {
+			return "", true
+		}
+		say("tailnet authkey refused reason=form")
+		return "", false
+	}
+	if err != nil {
+		return "", true
+	}
+	text := strings.TrimRight(string(line), "\r\n")
+	if !keyPattern.MatchString(text) {
+		say("tailnet authkey refused reason=form")
+		return "", false
+	}
+	return text, false
+}
+
+func run(state, socket, hostname string, port int, authKey string, input io.Reader) int {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		say("tailnet start failed reason=state_folder")
 		return 1
@@ -79,7 +129,12 @@ func run(state, socket, hostname string, port int, input io.Reader) int {
 		os.Setenv(name, path)
 	}
 	discard := func(string, ...any) {}
-	server := &tsnet.Server{Dir: state, Hostname: hostname, Logf: discard, UserLogf: discard}
+	// The auth key, when the server was given one, is used only while the node has no identity of its own yet; a node
+	// already signed in ignores it. A tagged key makes a tagged node, which turns the same-user check off (relay.go).
+	server := &tsnet.Server{Dir: state, Hostname: hostname, AuthKey: authKey, Logf: discard, UserLogf: discard}
+	if authKey != "" {
+		say("tailnet authkey=given")
+	}
 	say("tailnet starting")
 	if err := server.Start(); err != nil {
 		say("tailnet start failed reason=start")
@@ -101,7 +156,7 @@ func run(state, socket, hostname string, port int, input io.Reader) int {
 	say(fmt.Sprintf("tailnet listening port=%d", port))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	door := &door{client: client, port: port, dial: func() (net.Conn, error) { return net.DialTimeout("unix", socket, 5*time.Second) }}
+	door := &door{client: client, port: port, keyed: authKey != "", dial: func() (net.Conn, error) { return net.DialTimeout("unix", socket, 5*time.Second) }}
 	door.who = door.whois
 	var watching sync.WaitGroup
 	watching.Add(1)
@@ -123,9 +178,14 @@ func run(state, socket, hostname string, port int, input io.Reader) int {
 	return 0
 }
 
+// keyGrace is how long a node given an auth key may sit signed out with no sign-in link before the key counts as
+// refused (expired, revoked, used up) and the link is asked for, as without a key.
+const keyGrace = 30 * time.Second
+
 type door struct {
 	client *local.Client
 	port   int
+	keyed  bool
 	dial   func() (net.Conn, error)
 	who    func(context.Context, netip.AddrPort) (identity, error)
 
@@ -240,6 +300,7 @@ func (d *door) watch(ctx context.Context) {
 	var lastState, lastURL, lastPaths, lastPage string
 	lastCounts := "relayed=0 refused=0"
 	var urlSaid, lockSaid, expirySaid, countsSaid time.Time
+	started, keyGivenUp := time.Now(), false
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -248,6 +309,18 @@ func (d *door) watch(ctx context.Context) {
 			if status.BackendState != lastState {
 				say("tailnet state=" + word(status.BackendState))
 				lastState = status.BackendState
+			}
+			// tsnet asks for a sign-in link only when it starts without a key, so a key Tailscale refused would leave the
+			// node signed out with nothing to open. Its control client keeps trying the key, so the backend is started
+			// again without one (the same preferences), then the link is asked for once, and the page and log show it.
+			if d.keyed && !keyGivenUp && status.BackendState == "NeedsLogin" && status.AuthURL == "" && time.Since(started) > keyGrace {
+				keyGivenUp = true
+				say("tailnet authkey refused reason=rejected")
+				if err := d.client.Start(ctx, ipn.Options{}); err != nil {
+					say("tailnet login failed reason=restart")
+				} else if err := d.client.StartLoginInteractive(ctx); err != nil {
+					say("tailnet login failed reason=interactive")
+				}
 			}
 			if status.Self != nil && status.BackendState == "Running" {
 				self := identity{user: int64(status.Self.UserID), tagged: status.Self.Tags != nil && status.Self.Tags.Len() > 0}

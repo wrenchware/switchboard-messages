@@ -56,12 +56,22 @@ namespace NativeBeeper.Server.Linux;
 /// <param name="Tailnet">
 /// <c>MESSAGES_TAILNET=1</c>: put the server on the owner's tailnet through a door of its own (<see cref="TailnetDoor"/>, SWITCHBOARD.md 4.7), a Tailscale node in this
 /// container that devices reach on <see cref="Port"/> by its tailnet name. Off by default; the first start prints a Tailscale sign-in link in the container's log.
+/// Its auth key for a headless setup (<c>MESSAGES_TAILNET_AUTHKEY</c>) is deliberately not an option: a record's text would print it (<see cref="LinuxServerRun.TailnetAuthKeyVariable"/>).
 /// </param>
 /// <param name="TailnetNameGiven"><c>MESSAGES_TAILNET_NAME</c>, or <c>messages-server</c>: the door's name on the tailnet (one DNS label).</param>
+/// <param name="BackupsGiven">
+/// <c>MESSAGES_BACKUPS</c>: the folder the server's daily backup goes to (SWITCHBOARD.md stage 10, D7). Without it, <c>/backups</c> when that folder exists (the image's mapping); otherwise
+/// backups are off and the page says how to map a folder. Never created: a folder that is not there is a mapping that is missing.
+/// </param>
 internal sealed record LinuxServerOptions(string DataRoot, bool Restore, int Port = 8787, IReadOnlyList<string>? HostNamesGiven = null, bool Pair = false,
     string? KeysRootGiven = null, bool Google = false, string? ChromiumGiven = null, bool ChromiumNoSandbox = false, bool ChromiumHeaded = false, bool RemoteSignInOnHostNetwork = false, bool NetworkIsolated = false,
-    bool GoogleChrome = false, string? ChromeGiven = null, string? ChromeBuilt = null, string? ChromePolicyGiven = null, bool Tailnet = false, string? TailnetNameGiven = null)
+    bool GoogleChrome = false, string? ChromeGiven = null, string? ChromeBuilt = null, string? ChromePolicyGiven = null, bool Tailnet = false, string? TailnetNameGiven = null, string? BackupsGiven = null)
 {
+    public const string DefaultBackups = "/backups";
+
+    /// <summary>Where backups go: the folder named, or <see cref="DefaultBackups"/> when it exists; null for none (backups off).</summary>
+    public string? Backups(Func<string, bool> exists) => BackupsGiven ?? (exists(DefaultBackups) ? DefaultBackups : null);
+
     public const string DefaultTailnetName = "messages-server";
 
     public string TailnetName => TailnetNameGiven ?? DefaultTailnetName;
@@ -113,7 +123,8 @@ internal sealed record LinuxServerOptions(string DataRoot, bool Restore, int Por
             environment("MESSAGES_CHROME") is { Length: > 0 } chrome ? chrome : null,
             environment("MESSAGES_CHROME_BUILT") is { Length: > 0 } built ? built : null,
             Tailnet: environment("MESSAGES_TAILNET") == "1",
-            TailnetNameGiven: environment("MESSAGES_TAILNET_NAME") is { Length: > 0 } tailnetName ? tailnetName : null);
+            TailnetNameGiven: environment("MESSAGES_TAILNET_NAME") is { Length: > 0 } tailnetName ? tailnetName : null,
+            BackupsGiven: environment("MESSAGES_BACKUPS") is { Length: > 0 } backups ? backups : null);
 }
 
 /// <summary>Whether the data root can hold the host's state: it exists, and a file can be made and removed in it. A fixed word when not.</summary>

@@ -85,11 +85,14 @@ internal sealed partial class ServerPage
     private int wrongTries, pacedTries;
 
     private readonly IWholeHistory? history;
+    private readonly ServerPageBackups? backups;
 
     private ServerPage(string password, byte[] secret, string keysFolder, long generation, string passwordCheck, DeviceRegistry devices, PairingCodes pairing, JoinRequests joins,
-        Func<string> fingerprint, IServerAdmin? admin, IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet, Pushes? pushes, IWholeHistory? history)
+        Func<string> fingerprint, IServerAdmin? admin, IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet, Pushes? pushes, IWholeHistory? history,
+        ServerPageBackups? backups)
     {
         this.history = history;
+        this.backups = backups;
         this.keysFolder = keysFolder; this.generation = generation; this.passwordCheck = passwordCheck; this.joins = joins;
         this.secret = secret; this.devices = devices; this.pairing = pairing; this.fingerprint = fingerprint; this.admin = admin; this.logs = logs; this.time = time; this.log = log;
         this.tailnet = tailnet; this.pushes = pushes?.Switch.Folder is null ? null : pushes;
@@ -104,7 +107,7 @@ internal sealed partial class ServerPage
     /// A transition that cannot keep that invalidation refuses startup rather than let an earlier password revive old sign-ins on a later restart.
     /// </summary>
     public static ServerPage? Create(string? password, string keysFolder, DeviceRegistry devices, PairingCodes pairing, JoinRequests joins, Func<string> fingerprint, IServerAdmin? admin,
-        IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet = null, Pushes? pushes = null, IWholeHistory? history = null)
+        IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet = null, Pushes? pushes = null, IWholeHistory? history = null, ServerPageBackups? backups = null)
     {
         var stateFile = Path.Combine(keysFolder, SignedOutFile);
         var refusal = string.IsNullOrEmpty(password) ? "no_password"
@@ -134,7 +137,7 @@ internal sealed partial class ServerPage
         else if (lastCheck is not null && lastCheck != check) signOuts++;
         if (lastCheck != check) KeepStartupState(stateFile, signOuts, check, log);
         log("server page on");
-        return new ServerPage(password!, secret, keysFolder, signOuts, check, devices, pairing, joins, fingerprint, admin, logs, time, log, tailnet, pushes, history);
+        return new ServerPage(password!, secret, keysFolder, signOuts, check, devices, pairing, joins, fingerprint, admin, logs, time, log, tailnet, pushes, history, backups);
     }
 
     /// <summary>
@@ -240,7 +243,7 @@ internal sealed partial class ServerPage
 
     /// <summary>Whether a request is one of the page's (any other path stays the door's 404).</summary>
     public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push"
-        or "/mirror" or LogoPath;
+        or "/mirror" or LogoPath || IsBackupPath(path);
 
     /// <summary>The page's logo, shown before signing in too (it is the app's own icon, nothing of the server's).</summary>
     public const string LogoPath = "/logo.png";
@@ -296,7 +299,8 @@ internal sealed partial class ServerPage
                 return;
             }
             // The notifications form alone carries files.
-            var most = path == "/push" && session is not null ? MaxUpload : MaxBody;
+            // The restore's review of the devices, with a box for each, is larger than a form of one button.
+            var most = path == "/push" && session is not null ? MaxUpload : IsBackupPath(path) && session is not null ? MaxBackupForm : MaxBody;
             if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit) limit.MaxRequestBodySize = most;
             if (!request.HasFormContentType || request.ContentLength is not { } length || length < 0 || length > most)
             {
@@ -388,6 +392,24 @@ internal sealed partial class ServerPage
                 await PushAsync(context, form, token, pushes).ConfigureAwait(false);
                 return;
             case "/push":
+                Redirect(response, "/");
+                return;
+            case "/backups" when backups is not null && post:
+                await BackupsAsync(context, form!).ConfigureAwait(false);
+                return;
+            case "/backups/password" when backups is not null:
+                await BackupPasswordAsync(context, form, token).ConfigureAwait(false);
+                return;
+            case "/restore" when backups is not null:
+                await RestoreAsync(context, form, token).ConfigureAwait(false);
+                return;
+            case "/restore/review" when backups is not null && post:
+                await RestoreReviewAsync(context, form!, token).ConfigureAwait(false);
+                return;
+            case "/reset" when backups is not null:
+                await ResetAsync(context, form, token).ConfigureAwait(false);
+                return;
+            case "/backups" or "/backups/password" or "/restore" or "/restore/review" or "/reset":
                 Redirect(response, "/");
                 return;
             default:
@@ -622,6 +644,10 @@ internal sealed partial class ServerPage
             "push_on" => "Notifications are on. A phone starts getting them the next time Messages on it connects.",
             "push_on_unchecked" => "Notifications are on, but the server couldn't reach Google to check the key just now. If none arrive, add the files again.",
             "mirror" => "Checking now. Each service takes a few seconds per conversation; reload to see the results.",
+            "backup_started" => "Backing up now. Reload in a minute to see it done.",
+            "backup_busy" => "A backup is already running, or there's no password yet.",
+            "backup_checking" => "Reading the latest backup back now. Reload in a minute to see what it found.",
+            "backup_password" => "The backup password is set. Keep it safe: without it the backups can't be read.",
             _ => null,
         };
         if (said is not null) body.Append(Notice(said));
@@ -688,6 +714,8 @@ internal sealed partial class ServerPage
         }
         body.Append("</section>");
 
+        if (backups is not null) await BackupsCardAsync(body, token, cancellationToken).ConfigureAwait(false);
+
         if (history is not null) await CopiesCardAsync(body, token, cancellationToken).ConfigureAwait(false);
 
         var list = devices.List(null);
@@ -707,6 +735,8 @@ internal sealed partial class ServerPage
         // A page that asks for the password first (a GET, so nothing is done by following it).
         body.Append("<form method=\"get\" action=\"/pair\"><button type=\"submit\" class=\"quiet\">Make a pairing code</button></form>");
         body.Append("</section>");
+
+        if (backups is not null) ResetCard(body);
 
         // The AGPL offer to everyone who uses the server over the network: the source of the commit this image was built from (Core SourceCode).
         body.Append("<footer><a href=\"/log\">Recent log</a><a href=\"").Append(Html(SourceCode.For(status?.App, status?.Revision)))
@@ -730,7 +760,8 @@ internal sealed partial class ServerPage
         {
             body.Append("<section id=\"tailnet\"><h2>Away from home</h2>")
                 .Append(Para("Messages on a phone reaches this server through Tailscale, so it works anywhere without opening the server to the internet."))
-                .Append(Para("To use it, set Reach from your tailnet to 1 in the container's settings and start it again. This page then walks you through the rest."))
+                .Append(Para("To use it, turn it on where this server was installed, then start the server again: on Unraid, set Reach from your tailnet to 1 in the container's settings; "
+                    + "with Docker Compose, MESSAGES_TAILNET=1 in the .env file; on Linux or Proxmox, MESSAGES_TAILNET=1 in /etc/messages-server/environment. This page then walks you through the rest."))
                 .Append("</section>");
             return;
         }
@@ -1076,6 +1107,8 @@ internal sealed partial class ServerPage
         + ".copy.block{display:block;margin:6px 0 0;overflow-wrap:anywhere}.grow>a.button,.grow>.copy.block{align-self:flex-start}.grow>pre{margin:8px 0 6px}a.button.small{font-size:13px;padding:3px 10px;margin-top:6px}"
         // The notifications card's steps and form.
         + "ol.steps{margin:0 0 12px;padding-left:22px}ol.steps li{margin:0 0 6px}input[type=file]{font:inherit;display:block;margin:0 0 12px;max-width:100%}"
+        // The restore's choice of file, the reset's typed word, and the review's devices.
+        + "select,input#word{font:inherit;padding:6px 8px;width:100%;max-width:360px;box-sizing:border-box;margin:0 0 12px;display:block}label.grow{cursor:pointer}"
         + "@media(max-width:520px){header{flex-wrap:wrap}h1{white-space:nowrap}ul.rows li{flex-wrap:wrap}.attention .grow,#tailnet .grow{flex-basis:100%}}";
 
     // The page around a body: the logo and the title, and beside it `badge` when there is one; `refresh` reloads it every so many seconds (the home page, so a request to

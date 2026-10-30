@@ -163,6 +163,28 @@ public sealed class SqlitePrivateStateStore(string path, IStateProtector protect
         finally { gate.Release(); }
     }
     /// <summary>
+    /// Every row whose key starts with one of <paramref name="prefixes"/>, as it is kept (its payload still sealed), read in one transaction from a connection of
+    /// its own: the server's backup (stage 10), which unseals each with the protector that sealed it. None when the file is not there. Nothing is written.
+    /// </summary>
+    public static IReadOnlyList<(string Key, byte[] Sealed)> ReadSealed(string path, IReadOnlyList<string> prefixes)
+    {
+        if (!File.Exists(path)) return [];
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT key, payload FROM private_state ORDER BY key";
+        using var reader = command.ExecuteReader();
+        var rows = new List<(string, byte[])>();
+        while (reader.Read())
+        {
+            var key = reader.GetString(0);
+            if (prefixes.Any(prefix => key.StartsWith(prefix, StringComparison.Ordinal))) rows.Add((key, (byte[])reader[1]));
+        }
+        return rows;
+    }
+    /// <summary>
     /// Rewrites the database without its free pages (VACUUM), inside the store's own gate: a draft saved meanwhile waits
     /// for it, then lands in the compacted file. Every row is kept exactly as it was.
     /// </summary>

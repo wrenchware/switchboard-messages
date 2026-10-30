@@ -1,4 +1,32 @@
-# Messages Server on Unraid
+# Messages Server
+
+## Install
+
+Pick the one that matches what you have. Each ends at the server's own page, `https://<the server>:8787/` (the browser
+warns about the certificate once: the server made it itself), which asks for the setup code from the server's log on
+its first visit and then walks you through Tailscale, your accounts, your phone and PCs, notifications and backups.
+
+- **Unraid.** `install-unraid.sh` with the image from GitHub's registry (below, "Updates from GitHub's registry"), or
+  built on the server ("Build the image"). Backups go to the `backups` share, `/mnt/user/backups/messages`. A
+  Community Applications template is ready in `unraid/ca/` for when the image is public.
+- **Proxmox VE.** In the node's **Shell**:
+
+  ```sh
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/wrenchware/switchboard-messages/main/docker/messages-server/proxmox/install-proxmox.sh)"
+  ```
+
+  It asks a few questions (each with a default), makes an unprivileged Debian 13 container with the server, Google
+  Chrome and the tailnet door, and prints the page's address and the setup code. Until a package is published, copy
+  `messages-server-<version>-linux-x64.tar.gz` to the host and add `_ --tarball /root/messages-server-<version>-linux-x64.tar.gz`
+  to that line. Running it again updates the server in the same container. The script's header says the rest.
+- **Docker Compose**, on any Docker host: `compose.yaml` in this folder, its settings at the top (data and backups
+  folders, port, tailnet, and a Tailscale auth key in `.env`). Make the data and backups folders owned by `2787:2787`,
+  mode 700, first ("Run it").
+- **Linux with systemd and no Docker** (Debian, Ubuntu, an LXC you made yourself):
+  `tar -xzf messages-server-<version>-linux-x64.tar.gz && sudo ./messages-server-<version>-linux-x64/install.sh --google`
+  (`systemd/README.md`; without `--google` there is no Chrome and no Google Messages or Voice).
+- **Windows.** Messages for Windows connects your accounts on the PC itself, with no server; it can also use any server
+  above (Settings, Messages Server).
 
 ## Build the image (on the Unraid server)
 
@@ -100,6 +128,8 @@ the plugin's stop timeout: [updateDocker.php](https://github.com/Squidly271/ca.u
   permission tool can reach it.
 - **Data** (`/data`, `/mnt/user/appdata/messages-server`): the signed-in sessions, paired devices, the server's own
   stores and its log. Everything secret in it is sealed with the keys, so a copy of this folder alone is useless.
+- **Backups** (`/backups`, `/mnt/user/backups/messages`): where the server writes its own backups (see Backups). Owned
+  by 2787:2787, mode 700, like the data folder.
 
 If the keys volume is lost (for example when `docker.img` is recreated), the server refuses to start with the old data
 (`key_missing`): nothing leaks, but this server's Messenger history is gone with it, and you sign in and pair again
@@ -121,8 +151,9 @@ The server runs as its own account, 2787:2787, which nothing else on Unraid uses
 the Samba guest account and most other containers' user). Create the data folder for it, and the keys volume:
 
 ```sh
-mkdir -p /mnt/user/appdata/messages-server
+mkdir -p /mnt/user/appdata/messages-server /mnt/user/backups/messages
 chown -R 2787:2787 /mnt/user/appdata/messages-server && chmod 700 /mnt/user/appdata/messages-server
+chown 2787:2787 /mnt/user/backups/messages && chmod 700 /mnt/user/backups/messages
 docker volume create messages-server-keys
 docker run --rm --user 0:0 --network none --entrypoint /bin/sh -v messages-server-keys:/keys messages-server:local \
   -c "chown -R 2787:2787 /keys && chmod 700 /keys"
@@ -154,7 +185,10 @@ To turn it on:
 
 1. On Unraid's Docker tab, edit messages-server. Extra Parameters keep the port on the LAN address (for example
    `-p 10.13.37.103:8788:8787`). Set **Reach from your tailnet** to `1` (a template without the field: **Add another
-   Path, Port, Variable, Label or Device**, Variable, key `MESSAGES_TAILNET`, value `1`). Apply.
+   Path, Port, Variable, Label or Device**, Variable, key `MESSAGES_TAILNET`, value `1`). Apply. With compose, set
+   `MESSAGES_TAILNET=1` in `.env` and `docker compose up -d`; on Linux or Proxmox, `MESSAGES_TAILNET=1` in
+   `/etc/messages-server/environment` and `systemctl restart messages-server` (the Proxmox script turns it on when
+   asked).
 2. Open the server's page (its address in a browser at home, with the page's password). Its **Your tailnet** card walks
    you through the rest, each step marked done or with what to do and a link to the right place in Tailscale's console:
    - **Sign in to Tailscale** with your own account (the card shows the button while the server needs it, and moves on
@@ -172,6 +206,19 @@ To turn it on:
    the tailnet the server joins.
 
 The log then says `tailnet state=Running` and `tailnet owner_check=on`.
+
+**Without a browser at hand** (a headless install, or a server you set up from a script): give it a Tailscale auth key
+instead of the link. Make one in Tailscale's admin console (**Settings**, **Keys**, **Generate auth key**) and set
+`MESSAGES_TAILNET_AUTHKEY` to it: Unraid's **Tailscale auth key** field (advanced, masked), `MESSAGES_TAILNET_AUTHKEY=` in
+compose's `.env`, `/etc/messages-server/environment` on Linux, or the Proxmox script's question. The server takes it out
+of its environment at start and hands it to the tailnet door alone, on the door's input, never in an argument or a
+variable. It is used only while the server has no Tailscale identity yet; once signed in, clear it. A key Tailscale
+refuses (expired, revoked, used up) is said in the log (`tailnet authkey refused`), and the sign-in link comes instead.
+
+A **tagged** key (one made with tags, such as `tag:server`) makes a tagged machine. Tailscale then does not say which
+person owns it, so the door's same-user check is off (`tailnet owner_check=off reason=tagged`): instead of letting in
+only devices signed in as you, it lets in every device your access rules let through, and each of them counts as home.
+Use an untagged key unless your access rules already limit who reaches the server's port.
 
 Who gets in: only devices signed in to Tailscale as the user who signed the server in (yours). Another person's device or
 a tagged one is turned away before the server sees it (`tailnet connection refused reason=other_user|tagged`, the first and
@@ -385,8 +432,16 @@ Stop it from the Docker tab, or `docker stop -t 60 messages-server`. Give it the
 
 ## Backups
 
-Back up only while the container is stopped, and keep every copy private: never in an exported share. `umask 077`
-makes the archives readable by root alone. The destinations below are examples; use a folder that is not shared.
+The server writes its own backups to `/backups` whenever that folder is mapped: the template's **Backups** path
+(`/mnt/user/backups/messages`, a `backups` share), compose's `MESSAGES_BACKUPS_DIR`, `/var/lib/messages-server/backups`
+on Linux (`MESSAGES_BACKUPS`), or a folder of the Proxmox host. A server backup holds the history and the server's
+identity (its certificate, devices and push setup) but never a service sign-in, Messenger's encrypted device or the
+Tailscale identity: after restoring one, sign the accounts in again on the page. Copying that folder elsewhere is up to
+your own backup tool.
+
+For a full copy by hand, keys and sign-ins included, back up only while the container is stopped, and keep every copy
+private: never in an exported share. `umask 077` makes the archives readable by root alone. The destinations below are
+examples; use a folder that is not shared.
 
 ```sh
 docker stop -t 60 messages-server

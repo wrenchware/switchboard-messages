@@ -95,10 +95,16 @@ namespace NativeBeeper.Protocol;
 /// server built again by itself). Additive: a client below 25 never calls them and is never sent the event, and a host answers them as not supported to a
 /// connection that negotiated less. What every version gains is a list row whose last message is the server's copy's, so
 /// the list never says what the thread does not hold.</para>
+/// <para>26 (SWITCHBOARD.md stage 10, 10.2) adds the server's own backup: <c>server.backup.status</c> to any device, <c>server.backup.run</c> and
+/// <c>server.backup.password</c> to the owner device, and the <c>backup</c> account signal (<see cref="AccountSignals.Backup"/>). Additive: a client below 26 never
+/// calls them and is never sent the signal (its place in the sequence counts as sent), and a host answers them as not supported to a connection that negotiated less.
+/// A restore (10.3) changes nothing on the wire: every copy a client holds starts over through the new epochs it already reads.</para>
 /// </remarks>
 public static class ProtocolVersion
 {
-    public const int Current = 25;
+    public const int Current = 26;
+    /// <summary>The first version with the server's own backup (<see cref="ProtocolMethods.ServerBackupStatusRead"/> and the <c>backup</c> signal).</summary>
+    public const int ServerBackup = 26;
     /// <summary>The first version with the one ordered feed (<see cref="ProtocolMethods.HistoryFeed"/>) and the copy checks.</summary>
     public const int Feed = 25;
     /// <summary>The first version with the server's whole history (<see cref="ProtocolMethods.HistorySync"/> and the <c>history</c> event).</summary>

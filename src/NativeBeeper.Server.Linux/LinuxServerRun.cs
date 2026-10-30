@@ -21,6 +21,12 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
     /// </summary>
     public delegate Task Serve(ProtocolHost host, CancellationToken stopping);
 
+    /// <summary>
+    /// A Tailscale auth key for a headless setup (SWITCHBOARD.md 10.8): read like the page's password, taken out of the environment before any helper starts and
+    /// never kept in the options, and handed to the tailnet door alone, on its input (<see cref="TailnetDoor"/>).
+    /// </summary>
+    public const string TailnetAuthKeyVariable = "MESSAGES_TAILNET_AUTHKEY";
+
     private readonly CancellationTokenSource stopping = new();
     private RestoreLedger? ledger;
     private RestoreLedger Ledger => ledger ??= RestoreLedger.For(root, new FileKeyStateProtector(keys.StateKey), TimeProvider.System, log);
@@ -32,7 +38,8 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
     /// token per device, sealed with the host's own key. On the stop, new requests are refused and those already taken get the sends' bound. The server's own page is on
     /// when <c>MESSAGES_ADMIN_PASSWORD</c> is set (read here and handed on, never kept in the options, whose text would print it).
     /// </summary>
-    public static Serve Network(LinuxServerOptions options, HostKeys keys, Action<string> log, Func<string, string?>? environment = null) => async (host, stop) =>
+    /// <param name="restart">Stops the run so it starts again in this process (a restore or a reset from the page, applied before anything opens); false when it cannot.</param>
+    public static Serve Network(LinuxServerOptions options, HostKeys keys, Action<string> log, Func<string, string?>? environment = null, Func<string, bool>? restart = null) => async (host, stop) =>
     {
         // The owner's tailnet, when asked for (SWITCHBOARD.md 4.7): the host also listens on a relay socket that only the door beside it reaches.
         var relay = options.Tailnet ? TailnetDoor.RelaySocket : null;
@@ -45,9 +52,17 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
         var kept = named ?? Path.Combine(keys.Folder, "push");
         var pushFrom = named ?? (File.Exists(Path.Combine(kept, NativeBeeper.Host.Network.FirebaseTransport.ServiceAccountFile))
             && File.Exists(Path.Combine(kept, NativeBeeper.Host.Network.FirebaseTransport.AppSettingsFile)) ? kept : Path.Combine(options.DataRoot, "push"));
+        var protector = new FileKeyStateProtector(keys.StateKey);
+        // The page's Backups card, restore and reset (stage 10), and the record of the restore this server was made from, if it was.
+        var backups = host.Services.Backup is NativeBeeper.Host.Backup.ServerBackupService backup && host.Services.Admin is { } admin
+            ? new NativeBeeper.Host.Network.ServerPageBackups(backup, async ct => (await admin.AccountsAsync(ct).ConfigureAwait(false)).Count, ct => SignOutAllAsync(admin, log, ct),
+                restart ?? (_ => false))
+            : null;
+        var restored = await NativeBeeper.Host.Backup.RestoredMark.LoadAsync(Path.Combine(options.DataRoot, NativeBeeper.Host.Backup.RestoredMark.FileName), protector).ConfigureAwait(false);
         var network = await NativeBeeper.Host.Network.NetworkHost.StartAsync(host,
-            new NativeBeeper.Host.Network.NetworkHostOptions(options.DataRoot, new FileKeyStateProtector(keys.StateKey), log)
+            new NativeBeeper.Host.Network.NetworkHostOptions(options.DataRoot, protector, log)
             {
+                Backups = backups, Restored = restored,
                 Port = options.Port, HostNames = options.HostNames, Pair = options.Pair,
                 // The certificate's key and the devices' generation live with the keys, off the data volume.
                 KeysFolder = keys.Folder,
@@ -65,7 +80,8 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
             // Its sign-in link and Tailnet Lock key are shown as a code is; its node's state is kept with the keys.
             var door = relay is null ? null
                 : TailnetDoor.Start(Path.Combine(AppContext.BaseDirectory, TailnetDoor.Executable), Path.Combine(keys.Folder, TailnetDoor.StateFolder), relay,
-                    options.TailnetName, options.Port, log, Show, board: tailnet);
+                    options.TailnetName, options.Port, log, Show, board: tailnet,
+                    authKey: (environment ?? Environment.GetEnvironmentVariable)(TailnetAuthKeyVariable));
             try { await Task.Delay(Timeout.Infinite, stop).ConfigureAwait(false); }
             catch (OperationCanceledException) { }
             await network.StopAsync(ShutdownBudget.Normal.Sends).ConfigureAwait(false);
@@ -76,6 +92,24 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
 
     private static void Show(string line) => Console.Out.Write($"{DateTimeOffset.Now:HH:mm:ss.fff} {line}\n");
 
+    // Reset server (stage 10): every account the server can remove is removed, as Manage server removes one (each through its own sign-out); Google Messages, which is unpaired on
+    // the phone, and an account in the middle of a move are left for the reset itself, which deletes what the server keeps of them. A removal that fails stops the reset.
+    private static async Task<(int SignedOut, int Left, bool Failed)> SignOutAllAsync(NativeBeeper.Protocol.IServerAdmin admin, Action<string> log, CancellationToken cancellationToken)
+    {
+        int signedOut = 0, left = 0;
+        foreach (var account in await admin.AccountsAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!account.Removable) { left++; continue; }
+            try { if ((await admin.RemoveAccountAsync(account.Provider, account.Key, cancellationToken).ConfigureAwait(false)).Removed) signedOut++; }
+            catch (Exception failure) when (failure is not OperationCanceledException)
+            {
+                log($"server reset sign_out failed provider={account.Provider} type={failure.GetType().Name}");
+                return (signedOut, left, true);
+            }
+        }
+        return (signedOut, left, false);
+    }
+
     /// <summary>No transport: the host is composed and restored, and nothing can reach it (development, and the harness).</summary>
     public static Serve NoTransport(Action<string> log) => async (_, stop) =>
     {
@@ -83,6 +117,23 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
         try { await Task.Delay(Timeout.Infinite, stop).ConfigureAwait(false); }
         catch (OperationCanceledException) { }
     };
+
+    /// <summary>A backup did not stop within <see cref="BackupStopWait"/> as this run stopped: a restore or a reset waits for a later start.</summary>
+    public bool BackupStillRunning { get; private set; }
+    internal static readonly TimeSpan BackupStopWait = TimeSpan.FromSeconds(60);
+
+    /// <summary>Whether this run ended to start again in the same process (a restore or a reset chosen on the page), rather than to stop.</summary>
+    public bool RestartRequested => Volatile.Read(ref restartRequested) == 1;
+    private int restartRequested;
+
+    /// <summary>Stops this run so that the process composes the server again, applying a restore or a reset before anything opens. True: the stop has begun.</summary>
+    public bool RequestRestart(string why)
+    {
+        if (Volatile.Read(ref stopRequested) == 1) return false;
+        Interlocked.Exchange(ref restartRequested, 1);
+        RequestStop(why);
+        return true;
+    }
 
     /// <summary>Begins the stop, once; a second request (a second Ctrl+C) is only logged, since the stop is already bounded.</summary>
     public void RequestStop(string why)
@@ -96,12 +147,12 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
     public async Task<int> RunAsync(Serve serve)
     {
         LinuxHostStartup? composed = null;
-        Task restoring = Task.CompletedTask, serving = Task.CompletedTask;
+        Task restoring = Task.CompletedTask, serving = Task.CompletedTask, backingUp = Task.CompletedTask;
         var code = 0;
         try
         {
             var clock = Stopwatch.StartNew();
-            composed = LinuxHostStartup.Compose(root, keys, log, options.Restore, google);
+            composed = LinuxHostStartup.Compose(root, keys, log, options.Restore, google, options.Backups(Directory.Exists));
             // One ledger for the start's restore and for the first login of an account that moved here.
             composed.UsePacing(Ledger.PermitAsync);
             log($"server ready ms={clock.ElapsedMilliseconds}");
@@ -111,6 +162,8 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
                 serving = Task.Run(() => serve(composed.Host, stopping.Token));
                 if (options.Restore) restoring = PacedRestoreAsync(composed, stopping.Token);
                 else composed.EndRestores();
+                // The daily backup, beside the history walk: its first look comes minutes after the start, at below-normal priority.
+                backingUp = Task.Run(() => composed.Backup.RunScheduleAsync(stopping.Token));
                 try
                 {
                     await serving.WaitAsync(stopping.Token).ConfigureAwait(false);
@@ -134,7 +187,7 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
             code = 1;
             RequestStop("start_failed");
         }
-        await StopAsync(composed, restoring, serving).ConfigureAwait(false);
+        await StopAsync(composed, restoring, serving, backingUp).ConfigureAwait(false);
         return code;
     }
 
@@ -188,7 +241,7 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
 
     // The Windows server's stop, in its order: refuse new helpers and stop the restore, close the door (the transport drains its clients on the
     // sends bound), then close the providers within their bounds (BackendShutdown: a send already on the wire gets its own bound, and is never resent).
-    private async Task StopAsync(LinuxHostStartup? composed, Task restoring, Task serving)
+    private async Task StopAsync(LinuxHostStartup? composed, Task restoring, Task serving, Task backingUp)
     {
         var clock = Stopwatch.StartNew();
         var budget = ShutdownBudget.Normal;
@@ -202,6 +255,17 @@ internal sealed class LinuxServerRun(string root, HostKeys keys, LinuxServerOpti
         catch (TimeoutException) { log("server stop transport_still_running"); }
         catch (Exception failure) when (failure is not OperationCanceledException) { log($"server stop transport_error={failure.GetType().Name}"); }
         catch (OperationCanceledException) { }
+        // A backup being written stops with the run and leaves no file behind (its temporary is removed); its end is waited for, on the sends bound.
+        // And one started by hand (Back up now, Check latest): stopped and waited for, so a restore or a reset applied after this run never runs beside it.
+        composed?.Backup.Stop();
+        try { await backingUp.WaitAsync(budget.Sends).ConfigureAwait(false); }
+        catch (TimeoutException) { }
+        catch (Exception) { }
+        if (composed is not null && !await composed.Backup.IdleAsync(BackupStopWait).ConfigureAwait(false))
+        {
+            log("server stop backup_still_running");
+            BackupStillRunning = true;
+        }
         if (composed is not null)
         {
             // Chrome (when the server runs one) closes first and gently, so its cookies and state are on disk; it gets its own bound.

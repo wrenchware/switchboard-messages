@@ -10,10 +10,40 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestReadAuthKey(t *testing.T) {
+	long := "tskey-auth-" + strings.Repeat("a", 2000)
+	cases := []struct {
+		input, key string
+		ended      bool
+		rest       string
+	}{
+		{"tskey-auth-kAbc123CNTRL-xyz789\nmore", "tskey-auth-kAbc123CNTRL-xyz789", false, "more"},
+		{"tskey-auth-kAbc123CNTRL-xyz789\r\n", "tskey-auth-kAbc123CNTRL-xyz789", false, ""},
+		// Not Tailscale's form: dropped, and the sign-in link is offered as before.
+		{"hunter2-not-a-key\n", "", false, ""},
+		{"tskey-auth-has space\n", "", false, ""},
+		{"\n", "", false, ""},
+		{long + "\nrest", "", false, "rest"},
+		// The server stopped before it wrote a whole line.
+		{"", "", true, ""},
+		{"tskey-auth-kAbc123CNTRL", "", true, ""},
+		{long, "", true, ""},
+	}
+	for _, c := range cases {
+		input := bufio.NewReaderSize(strings.NewReader(c.input), maxKeyLine)
+		key, ended := readAuthKey(input)
+		rest, _ := io.ReadAll(input)
+		if key != c.key || ended != c.ended || (!ended && string(rest) != c.rest) {
+			t.Errorf("readAuthKey(%.40q) = %q %v (rest %q), want %q %v (rest %q)", c.input, key, ended, rest, c.key, c.ended, c.rest)
+		}
+	}
+}
 
 func TestAdmit(t *testing.T) {
 	owner, other := identity{user: 7}, identity{user: 9}

@@ -869,6 +869,24 @@ The server also has a page of its own, for a browser on your home network, once 
 - **Check latest backup** reads the newest backup back. Messages also checks it a day after writing it, then weekly.
 - **Restore from backup…** asks for the file and its password, shows what's in it, then adds only what's missing. Messenger messages the backup knows were deleted are removed here too. Messenger history only goes back into the same Facebook account. Drafts, names and saved messages come back only to a PC that has none.
 
+### Your Messages Server's backup {#server-backup}
+
+When Messages uses a Messages Server, the server keeps the backups: **Settings → Storage and backup → Backup and restore** shows how its backup stands (the last backup and its size, or why it failed), and **Manage…** opens it.
+
+- Once a day the server writes one encrypted file into the folder it was given (with Docker, a folder mapped to `/backups`, such as an Unraid share). It holds your conversations, the server's own settings, its certificate and its devices, saved photos, scheduled messages, and Messenger's history. It never holds a sign-in: after a restore you sign in to each account again.
+- The server keeps its five newest backups, and never removes the newest one that holds Messenger's history. It reads the newest back a day after writing it, then weekly.
+- On the PC paired with the server first, **Back up now** starts one, and **Set password…** sets the password backups are sealed with (at least 8 characters, typed twice). If you lose it, those backups can't be read by anyone, the server included. Other devices see how the backup stands.
+- If no backup has worked for two days, the server tells your phone.
+- The server's own page has the same controls in its **Backups** card, with **Check latest** and on and off. If the server has no backups folder, the card says how to give it one.
+
+**Restoring** is done on the server's page, and only onto a server with no account signed in: a new server offers **Restore from a backup…**, and **Reset server…** (type `RESET`) signs every account out and deletes everything an existing one holds first. Choose the backup and type its password; nothing is written if the password is wrong or the file is damaged. Confirm the server the backup came from is turned off, since two servers with one identity would split your devices. Then review the devices the backup brings back, each with when it last connected: untick any you removed or no longer have, or forget them all for all-new equipment. The server starts again and restores before it opens anything.
+
+- Every device that's kept reconnects by itself, starts its copy of your conversations over and keeps its drafts. A device that joined after the backup was made is told **This server was restored from an earlier backup. Ask to join again.**
+- Scheduled messages whose time came are held for you to send or drop; later ones go as scheduled. Nothing that was sending is sent again.
+- Sign in to each account again on the server; it then fills in what arrived meanwhile, and adds Messenger's history once Messenger is signed in.
+- A backup made by a PC (before it used a server) restores onto a server too: its Messenger history and choices are added once those accounts are signed in on the server.
+- If the server moved to new hardware at a new address, **Settings → Accounts → Messages Server → Manage… → The server moved to a new address?** changes only the address and keeps this PC's pairing, once the old address no longer answers; the server's certificate proves it's the same server.
+
 ### Export a conversation {#export}
 
 **Export conversation…** in the conversation menu saves what's loaded as a **web page** (.html) or **text** (.txt). Scroll up first to include more. Scheduled messages aren't included, nothing is marked read, and the file isn't encrypted.

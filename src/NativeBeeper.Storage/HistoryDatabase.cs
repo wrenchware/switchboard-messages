@@ -56,7 +56,7 @@ public sealed record HistoryFeedRead(long Through, bool More, IReadOnlyList<Hist
 /// A file whose key no longer opens it starts over with a new epoch, so every client that held a copy under the old one is told to replace it. One
 /// connection is held open and every call takes the one gate; reads are short (a page) and a write is one conversation's change.
 /// </remarks>
-public sealed class HistoryDatabase(string path, IStateProtector protector) : IDisposable
+public sealed partial class HistoryDatabase(string path, IStateProtector protector) : IDisposable
 {
     // 2 (stage 9) adds the list rows, numbered in the same sequence as the messages.
     private const int Version = 2;

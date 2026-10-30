@@ -9,6 +9,8 @@
     <InternalsVisibleTo Include="messages-server" />
     <InternalsVisibleTo Include="NativeBeeper.ContractTests" />
     <InternalsVisibleTo Include="NativeBeeper.Host" />
+    <!-- The server page's Backups card words a backup's size and failures as the PC backup does (stage 10). -->
+    <InternalsVisibleTo Include="NativeBeeper.Host.Network" />
     <InternalsVisibleTo Include="NativeBeeper.Windows.Browser" />
   </ItemGroup>
   <ItemGroup>

@@ -33,6 +33,7 @@ namespace NativeBeeper.Protocol;
 /// <paramref name="VoiceRemoteSignIn"/> serves <c>accounts.voice.remoteSignIn</c> (protocol 15): a Google Voice sign-in made in the host's own browser, shown and driven as the Google Messages one is; only the Linux server run with Google Chrome has one.
 /// <paramref name="Logs"/> serves <c>host.logs</c> (protocol 18): the host's own logs, by name, to the owner device; only the Linux server has one.
 /// <paramref name="Admin"/> serves <c>host.status</c>, <c>host.accounts</c> and <c>host.removeAccount</c> (SWITCHBOARD.md 4.6) to the owner device; only the Linux server has one.
+/// <paramref name="Backup"/> serves <c>server.backup.*</c> (protocol 26): the server's own backup; only the Linux server has one.
 /// </summary>
 public sealed record ProtocolServices(
     IBeeperBackend? Backend = null,
@@ -71,4 +72,4 @@ public sealed record ProtocolServices(
     ISharedState? SharedState = null, ConnectionRoster? Connections = null,
     Action<string, string?>? AccountEnded = null, IScheduledCommands? Scheduled = null, IStateImport? Imports = null, IRemoteSignInHost? RemoteSignIn = null,
     IQrPairingHost? QrPairing = null, IRemoteSignInHost? VoiceRemoteSignIn = null, IAccountMove? AccountMove = null, IHostLogs? Logs = null, IServerAdmin? Admin = null,
-    IPushService? Push = null, ConversationSync? ConversationSync = null, IWholeHistory? WholeHistory = null);
+    IPushService? Push = null, ConversationSync? ConversationSync = null, IWholeHistory? WholeHistory = null, IServerBackup? Backup = null);

@@ -54,7 +54,15 @@ internal sealed partial class TailnetDoor
     [GeneratedRegex("^tailnet lock sign node_key=nodekey:[0-9a-f]{64}$", RegexOptions.CultureInvariant)]
     private static partial Regex LockLine();
 
+    // A Tailscale auth key, as the door takes it (main.go's keyPattern).
+    [GeneratedRegex("^tskey-[A-Za-z0-9_-]{8,500}$", RegexOptions.CultureInvariant)]
+    private static partial Regex AuthKey();
+
+    /// <summary>Whether <paramref name="key"/> has the form of a Tailscale auth key (<c>tskey-...</c>), the only thing the door is ever handed on its input.</summary>
+    internal static bool LooksLikeAuthKey(string? key) => key is not null && AuthKey().IsMatch(key);
+
     private readonly ProcessStartInfo start;
+    private readonly string? authKey;
     private readonly Action<string> log, console;
     private readonly TailnetBoard? board;
     private readonly Func<ProcessStartInfo, Process> launch;
@@ -64,19 +72,28 @@ internal sealed partial class TailnetDoor
     private Task supervising = Task.CompletedTask;
     private int unreadable;
 
-    private TailnetDoor(ProcessStartInfo start, Action<string> log, Action<string> console, Func<ProcessStartInfo, Process> launch, TailnetBoard? board)
+    private TailnetDoor(ProcessStartInfo start, string? authKey, Action<string> log, Action<string> console, Func<ProcessStartInfo, Process> launch, TailnetBoard? board)
     {
-        this.start = start; this.log = log; this.console = console; this.launch = launch; this.board = board;
+        this.start = start; this.authKey = authKey; this.log = log; this.console = console; this.launch = launch; this.board = board;
     }
 
     /// <summary>
     /// Starts the door for a server on <paramref name="port"/> whose relay socket is <paramref name="socket"/>, or says why not (<c>server tailnet refused
     /// reason=name|no_door</c>) and returns null. <paramref name="console"/> is the container's own output; <paramref name="launch"/> a check's stand-in for the
     /// process start (the server's is <see cref="HelperJob.Start"/>, from the one thread a parent-death signal may come from).
+    /// <paramref name="authKey"/> is <c>MESSAGES_TAILNET_AUTHKEY</c> (SWITCHBOARD.md 10.8, headless setups): written as the first line of each run's input and nowhere else, so
+    /// the door's environment stays empty and no argument names it. One not of Tailscale's form is dropped (<c>server tailnet authkey refused reason=form</c>) and the
+    /// sign-in link is offered as without one. Tailscale uses it only while the node has no identity yet.
     /// </summary>
     public static TailnetDoor? Start(string executable, string stateFolder, string socket, string name, int port, Action<string> log, Action<string> console,
-        Func<ProcessStartInfo, Process>? launch = null, TailnetBoard? board = null)
+        Func<ProcessStartInfo, Process>? launch = null, TailnetBoard? board = null, string? authKey = null)
     {
+        if (authKey is { Length: > 0 } && !LooksLikeAuthKey(authKey))
+        {
+            log("server tailnet authkey refused reason=form");
+            authKey = null;
+        }
+        if (authKey is { Length: 0 }) authKey = null;
         if (!Name().IsMatch(name))
         {
             log("server tailnet refused reason=name");
@@ -89,13 +106,17 @@ internal sealed partial class TailnetDoor
         }
         if (OperatingSystem.IsWindows()) Directory.CreateDirectory(stateFolder);
         else Directory.CreateDirectory(stateFolder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        var door = new TailnetDoor(StartInfo(executable, stateFolder, socket, name, port), log, console, launch ?? HelperJob.Start, board);
+        var door = new TailnetDoor(StartInfo(executable, stateFolder, socket, name, port, authKey is not null), authKey, log, console, launch ?? HelperJob.Start, board);
+        if (authKey is not null) log("server tailnet authkey=given");
         door.supervising = Task.Run(door.SuperviseAsync);
         return door;
     }
 
-    /// <summary>The door's command: its arguments, its pipes, and an environment holding nothing but the server's process id (parentwatch_linux.go).</summary>
-    internal static ProcessStartInfo StartInfo(string executable, string stateFolder, string socket, string name, int port)
+    /// <summary>
+    /// The door's command: its arguments, its pipes, and an environment holding nothing but the server's process id (parentwatch_linux.go). With
+    /// <paramref name="authKeyOnInput"/> the door reads an auth key from its input's first line (<c>--authkey-stdin</c>); the key itself is never in here.
+    /// </summary>
+    internal static ProcessStartInfo StartInfo(string executable, string stateFolder, string socket, string name, int port, bool authKeyOnInput = false)
     {
         var start = new ProcessStartInfo(Path.GetFullPath(executable))
         {
@@ -104,6 +125,7 @@ internal sealed partial class TailnetDoor
         };
         foreach (var argument in new[] { "--state", stateFolder, "--socket", socket, "--hostname", name, "--port", port.ToString(CultureInfo.InvariantCulture) })
             start.ArgumentList.Add(argument);
+        if (authKeyOnInput) start.ArgumentList.Add("--authkey-stdin");
         start.Environment.Clear();
         if (OperatingSystem.IsLinux()) start.Environment["MESSAGES_HELPER_PARENT_PID"] = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
         return start;
@@ -147,6 +169,8 @@ internal sealed partial class TailnetDoor
                 var ran = Stopwatch.StartNew();
                 lock (gate) running = process;
                 log("server tailnet started");
+                // The auth key first, before anything could end the input: the door reads it as its first line, then waits for the input to end as before.
+                if (authKey is not null) Give(process, authKey);
                 // A stop that came while it was starting found nothing to end.
                 if (stopping.IsCancellationRequested) EndInput(process);
                 var errorLines = 0;
@@ -187,6 +211,20 @@ internal sealed partial class TailnetDoor
     {
         try { return process.ExitCode.ToString(CultureInfo.InvariantCulture); }
         catch (Exception) { return "unknown"; }
+    }
+
+    private void Give(Process process, string key)
+    {
+        try
+        {
+            process.StandardInput.Write(key + "\n");
+            process.StandardInput.Flush();
+        }
+        catch (Exception failure) when (failure is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            // A door that already ended: the restart gives it again.
+            log($"server tailnet authkey failed type={failure.GetType().Name}");
+        }
     }
 
     private static void EndInput(Process process)

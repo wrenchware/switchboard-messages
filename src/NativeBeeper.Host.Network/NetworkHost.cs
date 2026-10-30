@@ -142,8 +142,9 @@ internal sealed class NetworkHost : IAsyncDisposable
         pairing = new PairingCodes(options.Time, log, options.ShowCode);
         joins = new JoinRequests(options.Time, log, Path.Combine(options.KeysFolder ?? options.DataFolder, "join-requests-paused"));
         page = ServerPage.Create(options.PagePassword, options.KeysFolder ?? options.DataFolder, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
-            options.Tailnet, pushes, history);
+            options.Tailnet, pushes, history, options.Backups);
         devices.Revoked += EndDevice;
+        devices.Restored = options.Restored;
         // Real time, whatever clock the codes expire by: the check itself reads that clock (a test calls CheckPairing after moving it).
         pairingCheck = new Timer(_ => CheckPairing(), null, PairingCheckEvery, PairingCheckEvery);
     }
@@ -244,11 +245,14 @@ internal sealed class NetworkHost : IAsyncDisposable
         {
             // Started once pushes are on, at the start or when the page turns them on, and sending through the switch, so new files take over at once.
             var started = 0;
+            PushNotifier? notifier = null;
             void Start()
             {
-                if (Interlocked.Exchange(ref started, 1) == 0) host.Own(new PushNotifier(events, chats, sender, pushes, pushSwitch, presence.InFront, options.Log, services.SharedState,
+                if (Interlocked.Exchange(ref started, 1) == 0) host.Own(notifier = new PushNotifier(events, chats, sender, pushes, pushSwitch, presence.InFront, options.Log, services.SharedState,
                     quietFor: presence.AtAnotherDevice));
             }
+            // Two days without a good backup (stage 10): every phone signed up for notifications is told; with none, nobody is, and the backup asks again later.
+            if (options.Backups?.Service is { } backup) backup.StaleNotice = _ => Task.FromResult(notifier?.BackupStale() > 0);
             pushSwitch.TurnedOn += Start;
             if (pushSwitch.Current is not null) Start();
         }
@@ -444,10 +448,13 @@ internal sealed class NetworkHost : IAsyncDisposable
         if (authorization.Count > 0)
         {
             // A token, and only a token: a request that also carries a code is judged by its token alone.
-            device = authorization.Count == 1 ? devices.Authenticate(ClientToken.Presented(authorization[0])) : null;
+            var presentedToken = authorization.Count == 1 ? ClientToken.Presented(authorization[0]) : null;
+            device = presentedToken is null ? null : devices.Authenticate(presentedToken);
             if (device is null)
             {
-                await RefuseAsync(context, StatusCodes.Status401Unauthorized, "token").ConfigureAwait(false);
+                // A server restored from a backup (stage 10) says so to a token it does not know, so the device can say to ask to join again (NetworkEndpoint).
+                if (devices.RefusesAsRestored(presentedToken)) await RefuseAsync(context, StatusCodes.Status401Unauthorized, "restored", NetworkPairing.RefusalRestored).ConfigureAwait(false);
+                else await RefuseAsync(context, StatusCodes.Status401Unauthorized, "token").ConfigureAwait(false);
                 return;
             }
         }
@@ -582,7 +589,7 @@ internal sealed class NetworkHost : IAsyncDisposable
     // The private relay socket authenticates the tailnet path before TLS; an address or HTTP header cannot do that.
     private static bool FromTrustedNetwork(HttpContext context) => Relayed(context) || ServerPage.FromHome(context.Connection.RemoteIpAddress);
 
-    private async Task RefuseAsync(HttpContext context, int status, string reason)
+    private async Task RefuseAsync(HttpContext context, int status, string reason, string? word = null)
     {
         // The first, then one in a hundred, as the pipe's door: a peer that keeps knocking does not fill the log. The count is the total either way.
         var count = Interlocked.Increment(ref refused);
@@ -590,6 +597,7 @@ internal sealed class NetworkHost : IAsyncDisposable
         var response = context.Response;
         response.StatusCode = status;
         if (status == StatusCodes.Status401Unauthorized) response.Headers.WWWAuthenticate = "Bearer";
+        if (word is not null) response.Headers[NetworkPairing.RefusalHeader] = word;
         // One answer per connection: a refused peer cannot keep its place in the door by asking again on it.
         response.Headers.Connection = "close";
         response.ContentLength = 0;

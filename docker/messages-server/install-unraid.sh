@@ -122,6 +122,8 @@ keys="messages-server-keys"
 # containers' PUID).
 owner="2787:2787"
 appdata="${MESSAGES_APPDATA:-/mnt/user/appdata/messages-server}"
+# The server's own backups (README, Backups) go to a backups share, outside appdata, which the server sees as /backups.
+backups="${MESSAGES_BACKUPS_DIR:-/mnt/user/backups/messages}"
 port="${MESSAGES_PORT:-8787}"
 bind="${MESSAGES_BIND_IP:-}"
 case "$port" in ''|*[!0-9]*) echo "MESSAGES_PORT is not a port number." >&2; exit 1 ;; esac
@@ -236,6 +238,13 @@ done
 case "${MESSAGES_TAILNET:-0}" in 1) MESSAGES_TAILNET=1 ;; *) MESSAGES_TAILNET=0 ;; esac
 # One DNS label, as the server takes it; anything else is the default name.
 [[ "${MESSAGES_TAILNET_NAME:-}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || MESSAGES_TAILNET_NAME="messages-server"
+# A Tailscale auth key for a headless sign-in, only when this environment gives one (README, Your tailnet): passed to docker by name, so the value is in no
+# command line, and never written to install.env or the template. The door uses it only while it has no identity yet, which the keys volume keeps after.
+authkey_env=()
+if [ -n "${MESSAGES_TAILNET_AUTHKEY:-}" ]; then
+    export MESSAGES_TAILNET_AUTHKEY
+    authkey_env=(-e MESSAGES_TAILNET_AUTHKEY)
+fi
 
 # DockerMan recreates updates from a saved user template, not from our docker run command. Keep its sandbox profile
 # on the flash drive (no secrets in it), since the source/asset scratch directory is removed when this script exits.
@@ -286,6 +295,7 @@ if [ "$ghcr" = 1 ]; then
   <WebUI>$(xml_escape "$webui")</WebUI>
   <ExtraParams>$(xml_escape "$parameters")</ExtraParams>
   <Config Name="Data" Target="/data" Default="$(xml_escape "$appdata")" Mode="rw" Description="Sealed sessions, history and paired devices, useless without the keys volume." Type="Path" Display="always" Required="true" Mask="false">$(xml_escape "$appdata")</Config>
+  <Config Name="Backups" Target="/backups" Default="/mnt/user/backups/messages" Mode="rw" Description="Where the server writes its own backups (README, Backups). Owned by 2787:2787, mode 700." Type="Path" Display="always" Required="false" Mask="false">$(xml_escape "$backups")</Config>
   <Config Name="Data folder" Target="MESSAGES_DATA" Default="/data" Mode="" Description="Leave as /data, the folder mapped above." Type="Variable" Display="advanced" Required="true" Mask="false">/data</Config>
   <Config Name="Keys folder" Target="MESSAGES_KEYS" Default="/keys" Mode="" Description="Leave as /keys, the volume in Extra Parameters." Type="Variable" Display="advanced" Required="true" Mask="false">/keys</Config>
   <Config Name="Resume sign-ins" Target="MESSAGES_RESTORE" Default="1" Mode="" Description="1 resumes the accounts signed in on this server when it starts. 0 starts with none connected." Type="Variable" Display="always" Required="false" Mask="false">1</Config>
@@ -307,6 +317,11 @@ fi
 mkdir -p "$appdata"
 chown -R "$owner" "$appdata"
 chmod 700 "$appdata"
+# The backups folder, the same way: the server's account alone. Its contents are left as they are (they are the
+# server's own, written as that account).
+mkdir -p "$backups"
+chown "$owner" "$backups"
+chmod 700 "$backups"
 # The keys volume: made once and kept across reinstalls, owned by the server's account and private to it (set here
 # rather than left to Docker's copy of the image's /keys). An earlier install's keys in the data folder are moved into
 # it by the server at its first start.
@@ -345,6 +360,7 @@ docker run -d --name "$name" --restart unless-stopped --init --stop-timeout 60 \
     -p "$publish" \
     -v "$appdata:/data" \
     -v "$keys:/keys" \
+    -v "$backups:/backups" \
     -e MESSAGES_DATA=/data \
     -e MESSAGES_KEYS=/keys \
     -e MESSAGES_RESTORE=1 \
@@ -352,6 +368,7 @@ docker run -d --name "$name" --restart unless-stopped --init --stop-timeout 60 \
     -e MESSAGES_HOSTNAMES="${MESSAGES_HOSTNAMES:-}" \
     -e MESSAGES_TAILNET="$MESSAGES_TAILNET" \
     -e MESSAGES_TAILNET_NAME="$MESSAGES_TAILNET_NAME" \
+    ${authkey_env[@]+"${authkey_env[@]}"} \
     ${extra_env[@]+"${extra_env[@]}"} \
     "$image" >/dev/null
 

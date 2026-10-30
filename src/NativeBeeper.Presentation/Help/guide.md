@@ -705,6 +705,7 @@ These take over the console's screen until you press <kbd>q</kbd> or <kbd>Esc</k
 ### Everything else {#console-other}
 
 - `/status`: service health, unread, sends and notifications. `/diag`: a checklist of this copy of Messages and its services. `/whoami`, `/uptime`.
+- `/mirror`: with a Messages Server, how its copies of your conversations compared with each service at its last check (it checks every half hour and reads again whatever differs). `/mirror now` starts a check. It only reads: nothing is sent or marked read.
 - `/pause [1h|morning]`, `/resume`: notifications.
 - `/clear` (or <kbd>Ctrl+L</kbd>) clears the scroll; nothing is deleted. `/latest` jumps to the newest line and follows again.
 - `/help` lists commands, `/help talk` (or manage, look, apps, system, fun) lists one group with what each does, `/help command` (or `command --help`) shows its manual page, and `/help word` searches them. `/guide [topic]` opens this guide and `/tour` starts the tour.

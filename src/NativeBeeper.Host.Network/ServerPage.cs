@@ -84,9 +84,12 @@ internal sealed partial class ServerPage
     private readonly string passwordCheck;
     private int wrongTries, pacedTries;
 
+    private readonly IWholeHistory? history;
+
     private ServerPage(string password, byte[] secret, string keysFolder, long generation, string passwordCheck, DeviceRegistry devices, PairingCodes pairing, JoinRequests joins,
-        Func<string> fingerprint, IServerAdmin? admin, IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet, Pushes? pushes)
+        Func<string> fingerprint, IServerAdmin? admin, IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet, Pushes? pushes, IWholeHistory? history)
     {
+        this.history = history;
         this.keysFolder = keysFolder; this.generation = generation; this.passwordCheck = passwordCheck; this.joins = joins;
         this.secret = secret; this.devices = devices; this.pairing = pairing; this.fingerprint = fingerprint; this.admin = admin; this.logs = logs; this.time = time; this.log = log;
         this.tailnet = tailnet; this.pushes = pushes?.Switch.Folder is null ? null : pushes;
@@ -101,7 +104,7 @@ internal sealed partial class ServerPage
     /// A transition that cannot keep that invalidation refuses startup rather than let an earlier password revive old sign-ins on a later restart.
     /// </summary>
     public static ServerPage? Create(string? password, string keysFolder, DeviceRegistry devices, PairingCodes pairing, JoinRequests joins, Func<string> fingerprint, IServerAdmin? admin,
-        IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet = null, Pushes? pushes = null)
+        IHostLogs? logs, TimeProvider time, Action<string> log, TailnetBoard? tailnet = null, Pushes? pushes = null, IWholeHistory? history = null)
     {
         var stateFile = Path.Combine(keysFolder, SignedOutFile);
         var refusal = string.IsNullOrEmpty(password) ? "no_password"
@@ -131,7 +134,7 @@ internal sealed partial class ServerPage
         else if (lastCheck is not null && lastCheck != check) signOuts++;
         if (lastCheck != check) KeepStartupState(stateFile, signOuts, check, log);
         log("server page on");
-        return new ServerPage(password!, secret, keysFolder, signOuts, check, devices, pairing, joins, fingerprint, admin, logs, time, log, tailnet, pushes);
+        return new ServerPage(password!, secret, keysFolder, signOuts, check, devices, pairing, joins, fingerprint, admin, logs, time, log, tailnet, pushes, history);
     }
 
     /// <summary>
@@ -236,7 +239,8 @@ internal sealed partial class ServerPage
     }
 
     /// <summary>Whether a request is one of the page's (any other path stays the door's 404).</summary>
-    public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push" or LogoPath;
+    public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push"
+        or "/mirror" or LogoPath;
 
     /// <summary>The page's logo, shown before signing in too (it is the app's own icon, nothing of the server's).</summary>
     public const string LogoPath = "/logo.png";
@@ -274,7 +278,7 @@ internal sealed partial class ServerPage
             await response.Body.WriteAsync(bytes, context.RequestAborted).ConfigureAwait(false);
             return;
         }
-        if (!get && !post || get && path is "/logout" or "/joins/deny" or "/joins/pause" || post && path is "/" or "/log" or LogoPath)
+        if (!get && !post || get && path is "/logout" or "/joins/deny" or "/joins/pause" or "/mirror" || post && path is "/" or "/log" or LogoPath)
         {
             await PlainAsync(context, StatusCodes.Status405MethodNotAllowed, "Not here.").ConfigureAwait(false);
             return;
@@ -372,6 +376,13 @@ internal sealed partial class ServerPage
                 return;
             case "/log":
                 await PageAsync(context, StatusCodes.Status200OK, "Recent log", await LogBodyAsync(context.RequestAborted).ConfigureAwait(false)).ConfigureAwait(false);
+                return;
+            case "/mirror":
+                // Reads each service's most recently active conversations again, as the walk does every half hour: nothing is sent or marked read.
+                if (history is not null)
+                    try { await history.MirrorAsync(new HistoryMirrorParams(Start: true), context.RequestAborted).ConfigureAwait(false); }
+                    catch (Exception failure) when (failure is not OperationCanceledException) { log($"server page mirror failed type={failure.GetType().Name}"); }
+                Redirect(response, "/?done=mirror");
                 return;
             case "/push" when pushes is not null:
                 await PushAsync(context, form, token, pushes).ConfigureAwait(false);
@@ -610,6 +621,7 @@ internal sealed partial class ServerPage
             "join_gone" => "That request isn't waiting any more: it was answered, it ran out, or the device stopped asking.",
             "push_on" => "Notifications are on. A phone starts getting them the next time Messages on it connects.",
             "push_on_unchecked" => "Notifications are on, but the server couldn't reach Google to check the key just now. If none arrive, add the files again.",
+            "mirror" => "Checking now. Each service takes a few seconds per conversation; reload to see the results.",
             _ => null,
         };
         if (said is not null) body.Append(Notice(said));
@@ -675,6 +687,8 @@ internal sealed partial class ServerPage
             body.Append("<p class=\"quiet\">Accounts are removed in Messages, from Manage server on the PC that manages the server.</p>");
         }
         body.Append("</section>");
+
+        if (history is not null) await CopiesCardAsync(body, token, cancellationToken).ConfigureAwait(false);
 
         var list = devices.List(null);
         body.Append("<section id=\"devices\"><h2>Devices</h2>");
@@ -952,6 +966,41 @@ internal sealed partial class ServerPage
         if (chunk.Length > LogTail && text.IndexOf('\n') is var first and >= 0) text = text[(first + 1)..];
         return body.Append("<pre>").Append(Html(text)).Append("</pre>").ToString();
     }
+
+    // The server's check of its copy against each service (SWITCHBOARD.md stage 9): what the newest one found, and a button to check now.
+    private async Task CopiesCardAsync(StringBuilder body, string token, CancellationToken cancellationToken)
+    {
+        HistoryMirrorResult? mirror = null;
+        try { mirror = await history!.MirrorAsync(new HistoryMirrorParams(), cancellationToken).ConfigureAwait(false); }
+        catch (Exception failure) when (failure is not OperationCanceledException) { }
+        body.Append("<section><h2>Conversation copies</h2>");
+        if (mirror is null) body.Append(Para("The server couldn't say how its copies compare just now."));
+        else if (mirror.Reports.Count == 0) body.Append(Para(mirror.Running ? "Checking now." : "Not checked yet. The server checks every half hour."));
+        else
+        {
+            body.Append("<ul class=\"rows\">");
+            foreach (var report in mirror.Reports)
+            {
+                var found = report.Differed == 0 ? "all matched"
+                    : $"{report.Differed} differed ({report.Missing} missing, {report.Extra} gone, {report.Changed} changed), read again";
+                body.Append("<li><span class=\"grow\"><strong>").Append(Html(Service(report.Service))).Append("</strong><span class=\"quiet\">")
+                    .Append(report.Checked).Append(" checked · ").Append(Html(found))
+                    .Append(report.Skipped > 0 ? $" · {report.Skipped} not read" : "").Append(" · ").Append(Html(Ago(report.At))).Append("</span></span></li>");
+            }
+            body.Append("</ul>");
+            if (mirror.Running) body.Append(Para("Checking again now."));
+        }
+        body.Append("<p class=\"quiet\">Each service's most recently active conversations, compared with what the service has. Nothing is sent or marked read.</p>");
+        body.Append(Form("/mirror", token, "Check now", quiet: true)).Append("</section>");
+    }
+
+    private static string Service(string service) => service switch
+    {
+        "google-direct" => "Google Messages",
+        "messenger" => "Messenger",
+        "instagram" => "Instagram",
+        _ => "Google Voice",
+    };
 
     // ---- Words and HTML ----
 

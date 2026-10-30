@@ -221,7 +221,7 @@ public static class ConsoleCommandParser
             case "clear" or "cls":
                 return new ConsoleCommand.Clear();
             case "thread" or "diag" or "doctor" or "whoami" or "uptime" or "neofetch" or "fetch" or "cowsay" or "date" or "echo" or "theme" or "guide" or "manual" or "tour"
-                or "alias" or "unalias" or "watch" or "next":
+                or "alias" or "unalias" or "watch" or "next" or "mirror":
                 return new ConsoleCommand.Tool(ConsoleCatalog.Find(word)?.Name ?? word.ToLowerInvariant(), rest);
             default:
                 return new ConsoleCommand.Unknown(word);

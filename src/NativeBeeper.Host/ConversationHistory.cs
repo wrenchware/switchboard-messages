@@ -29,7 +29,7 @@ namespace NativeBeeper.Host;
 /// for the same read. Reads nobody asked for are paced per service, and Instagram's come one page at a time out of its hourly budget, only while half of it is
 /// left for arrivals. Logs counts, states and one-way tags only.</para>
 /// </remarks>
-internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPreviewLoader, IMessageSender, IMessagePeek, IHistoryWindowReader, IMessageActions,
+internal sealed partial class ConversationHistory : IWholeHistory, IChatReader, ILinkPreviewLoader, IMessageSender, IMessagePeek, IHistoryWindowReader, IMessageActions,
     IMessageMutations, IDisposable
 {
     /// <summary>The most pages a refresh reads back looking for what it holds before it starts the conversation over.</summary>
@@ -60,6 +60,20 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     private EventLog? events;
     private Task? worker;
     private Task? walker;
+    private Task? rower;
+    // The services' own list rows as last read, which the served rows are built from (stage 9, B2).
+    private readonly ConcurrentDictionary<string, ChatSummary> listed = new(StringComparer.Ordinal);
+    // Rows to build again soon: true to read the service's row first, false to build again from the one held.
+    private readonly ConcurrentDictionary<string, bool> rowsDue = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim rowsSignal = new(0);
+    private volatile bool listDue;
+    // The first whole read of the list is in the store: a feed that starts a client over waits for it (a little).
+    private readonly TaskCompletionSource rowsReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // The mirror check (stage 9, A2): the round under way per service, which round each conversation it asked for belongs to, and the newest finished.
+    private readonly object mirrorGate = new();
+    private readonly Dictionary<string, MirrorRound> rounds = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, MirrorRound> mirroring = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, HistoryMirrorReport> reports = new(StringComparer.Ordinal);
 
     /// <param name="mayReadUnasked">Asked before each service read nobody asked for (filling or catching up a conversation in the background): false defers
     /// it. Instagram's answers from its background budget.</param>
@@ -96,6 +110,17 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     public TimeSpan ResolveWait { get; init; } = TimeSpan.FromSeconds(3);
     /// <summary>The longest a page, a sync or a held read waits for the conversation's events already under way to be written.</summary>
     public TimeSpan SettleWait { get; init; } = TimeSpan.FromSeconds(3);
+    /// <summary>How long after an event its conversation's list row is built again, so a burst builds it once.</summary>
+    public TimeSpan RowsDelay { get; init; } = TimeSpan.FromMilliseconds(250);
+    /// <summary>The longest a feed that starts a client over waits for the first whole read of the list.</summary>
+    public TimeSpan RowsReadyWait { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// The most recently active conversations of each service a mirror check compares with the service. Each is one read of its newest page, a second apart
+    /// per service (owner, 2026-10-30: the walk's pace for Google, Messenger and Voice; Instagram only within its budget).
+    /// </summary>
+    public int MirrorPerService { get; init; } = 25;
+    /// <summary>A mirror check still waiting on reads after this long is reported with those counted as not read.</summary>
+    public TimeSpan MirrorTimeout { get; init; } = TimeSpan.FromMinutes(20);
 
     /// <summary>Opens the store and starts the background work.</summary>
     public void Start()
@@ -111,12 +136,17 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 ready.TrySetResult();
                 worker = Task.Run(WorkAsync, CancellationToken.None);
                 walker = Task.Run(WalkAsync, CancellationToken.None);
+                // The list rows at once (the walk's fills wait their 20 s): a client that starts over is handed the list from them.
+                listDue = true;
+                rower = Task.Run(RowsAsync, CancellationToken.None);
+                rowsSignal.Release();
             }
             catch (Exception failure)
             {
                 // Served without a history: every read goes on to the services, as before stage 8.
                 log($"history store open failed error={failure.GetType().Name}");
                 ready.TrySetException(failure);
+                rowsReady.TrySetResult();
             }
         });
     }
@@ -157,7 +187,11 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             {
                 await ready.Task.ConfigureAwait(false);
                 var forgotten = await ForgetAsync(held.Keys.Where(id => id.StartsWith(prefix, StringComparison.Ordinal)).ToArray()).ConfigureAwait(false);
-                log($"history store forgotten account={account} chats={forgotten}");
+                // Its list rows leave the feed too, the conversations never filled among them.
+                var rows = (await db.ReadListedAsync(stop.Token).ConfigureAwait(false)).Where(id => id.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+                foreach (var id in rows) listed.TryRemove(id, out _);
+                var gone = await db.WriteRowsAsync([.. rows.Select(id => new HistoryListRow(id, null))], stop.Token).ConfigureAwait(false);
+                log($"history store forgotten account={account} chats={forgotten} rows={gone.Count}");
             }
             catch (Exception failure) when (!stop.IsCancellationRequested) { log($"history store forget failed error={failure.GetType().Name}"); }
         });
@@ -167,7 +201,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     {
         stop.Cancel();
         queue.Complete();
-        try { Task.WaitAll([.. new[] { worker, walker }.OfType<Task>()], TimeSpan.FromSeconds(2)); } catch (Exception) { }
+        try { Task.WaitAll([.. new[] { worker, walker, rower }.OfType<Task>()], TimeSpan.FromSeconds(2)); } catch (Exception) { }
         db.Dispose();
     }
 
@@ -236,10 +270,150 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         return new(Revision(seq), false, changed.Select(row => new HistoryChatRevision(row.ChatId, Revision(row.Seq))).ToArray());
     }
 
-    // ---- IChatReader: the list as the services give it; a conversation's pages from the copy ----
+    // ---- Protocol 25: the one ordered feed, and the copy checks (stage 9) ----
 
-    public Task<Page<ChatSummary>> GetChatsAsync(string? olderThan = null, CancellationToken cancellationToken = default) => chats.GetChatsAsync(olderThan, cancellationToken);
-    public Task<ChatSummary> GetChatAsync(string chatId, CancellationToken cancellationToken = default) => chats.GetChatAsync(chatId, cancellationToken);
+    private const string RowsPage = "rows:";
+
+    public async Task<HistoryFeedResult> FeedAsync(HistoryFeedParams request, CancellationToken cancellationToken = default)
+    {
+        await ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var limit = Math.Clamp(request.Limit ?? WholeHistoryLimits.DefaultFeed, 1, WholeHistoryLimits.MaxFeed);
+        var clock = Stopwatch.GetTimestamp();
+        // A start-over carrying on: list rows alone, from where its last answer ended.
+        if (request.Page is { } page)
+        {
+            if (!page.StartsWith(RowsPage, StringComparison.Ordinal)) throw new ArgumentException("Invalid feed page.");
+            // One handed out before the store started over (another epoch): the start-over begins again.
+            if (Parse(page[RowsPage.Length..]) is not { } from) return await RowsFromAsync(0, reset: true, limit, clock, cancellationToken).ConfigureAwait(false);
+            return await RowsFromAsync(from, reset: false, limit, clock, cancellationToken).ConfigureAwait(false);
+        }
+        // Nothing held, or held under another epoch: the whole list, and every copy read again when opened. Messages are not carried (every one held would
+        // come after 0); a copy is filled when its conversation is opened.
+        if (Parse(request.Since) is not { } since || since > db.Seq)
+        {
+            try { await rowsReady.Task.WaitAsync(RowsReadyWait, cancellationToken).ConfigureAwait(false); }
+            catch (TimeoutException) { }
+            return await RowsFromAsync(0, reset: true, limit, clock, cancellationToken).ConfigureAwait(false);
+        }
+        await FeedSettledAsync(cancellationToken).ConfigureAwait(false);
+        var read = await db.ReadFeedAsync(since, limit, WholeHistoryLimits.MaxFeedBytes, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var changes = new List<HistoryChange>(read.Chats.Count);
+        foreach (var chat in read.Chats)
+        {
+            var messages = chat.Messages.Where(row => !row.Removed).Select(Message).OfType<ChatMessage>().ToArray();
+            var removed = chat.Messages.Where(row => row.Removed).Select(row => row.MessageId).ToArray();
+            changes.Add(new(chat.ChatId, Revision(chat.From), Revision(chat.To), messages, removed));
+        }
+        var (rows, gone) = Rows(read.Rows);
+        log($"history feed reset=0 rows={rows.Count} gone={gone.Count} chats={changes.Count} messages={read.Chats.Sum(chat => chat.Messages.Count)} more={(read.More ? 1 : 0)} ms={Ms(clock)}");
+        return new(Revision(read.Through), false, rows, gone, changes, read.More);
+    }
+
+    private async Task<HistoryFeedResult> RowsFromAsync(long from, bool reset, int limit, long clock, CancellationToken cancellationToken)
+    {
+        var read = await db.ReadFeedAsync(from, limit, WholeHistoryLimits.MaxFeedBytes, rowsOnly: true, cancellationToken).ConfigureAwait(false);
+        var (rows, gone) = Rows(read.Rows);
+        log($"history feed reset=1 rows={rows.Count} gone={gone.Count} more={(read.More ? 1 : 0)} ms={Ms(clock)}");
+        // Rows that left the list are nothing to a list being replaced, but one carrying on still needs them.
+        return new(Revision(read.Through), reset, rows, reset ? [] : gone, [], false, read.More ? RowsPage + Revision(read.Through) : null);
+    }
+
+    private static (IReadOnlyList<ChatSummary> Rows, IReadOnlyList<string> Gone) Rows(IReadOnlyList<HistoryFeedRow> read)
+    {
+        var rows = new List<ChatSummary>();
+        var gone = new List<string>();
+        foreach (var row in read)
+        {
+            if (row.Payload is null) { gone.Add(row.ChatId); continue; }
+            try { if (JsonSerializer.Deserialize<ChatSummary>(row.Payload, ProtocolJson.Options) is { } summary) rows.Add(summary); }
+            catch (JsonException) { }
+        }
+        return (rows, gone);
+    }
+
+    public async Task<HistoryVerifyResult> VerifyAsync(HistoryVerifyParams request, CancellationToken cancellationToken = default)
+    {
+        await ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (request.Chats.Count > WholeHistoryLimits.MaxVerify) throw new ArgumentException("Too many copies to compare.");
+        var answers = new List<HistoryCopyCheck>(request.Chats.Count);
+        int same = 0, differ = 0, behind = 0, unknown = 0;
+        foreach (var copy in request.Chats)
+        {
+            var outcome = HistoryCopyOutcomes.Unknown;
+            var count = 0;
+            if (held.TryGetValue(copy.ChatId, out var chat) && chat.State is { Filled: true } state && Parse(copy.Revision) is { } revision && copy.Count >= 0)
+            {
+                long seq;
+                lock (chat.Numbers) seq = chat.Seq;
+                var oldest = new Position(copy.OldestTimestamp.UtcTicks, copy.OldestSortKey ?? "", copy.OldestId ?? "");
+                if (seq > revision) outcome = HistoryCopyOutcomes.Behind;
+                else if (state.Floor is { } floor && oldest.CompareTo(floor) < 0) outcome = HistoryCopyOutcomes.Unknown;
+                else
+                {
+                    var rows = await db.ReadAtOrAfterAsync(copy.ChatId, copy.OldestTimestamp.ToUnixTimeMilliseconds(), copy.Count + 256, cancellationToken).ConfigureAwait(false);
+                    var span = rows.Select(Message).OfType<ChatMessage>().Where(message => Position.Of(message).CompareTo(oldest) >= 0).ToArray();
+                    count = span.Length;
+                    // Read while it may have changed: compared only if the conversation is still where the copy is.
+                    lock (chat.Numbers) seq = chat.Seq;
+                    // Far more held over the copy's span than it has is a difference too.
+                    outcome = seq > revision ? HistoryCopyOutcomes.Behind
+                        : rows.Count >= copy.Count + 256 ? HistoryCopyOutcomes.Differ
+                        : HistoryDigest.Of(span) == copy.Digest ? HistoryCopyOutcomes.Same : HistoryCopyOutcomes.Differ;
+                }
+            }
+            switch (outcome)
+            {
+                case HistoryCopyOutcomes.Same: same++; break;
+                case HistoryCopyOutcomes.Differ: differ++; break;
+                case HistoryCopyOutcomes.Behind: behind++; break;
+                default: unknown++; break;
+            }
+            answers.Add(new(copy.ChatId, outcome, count));
+        }
+        log($"history verify chats={answers.Count} same={same} differ={differ} behind={behind} unknown={unknown}");
+        return new(answers);
+    }
+
+    public async Task<HistoryMirrorResult> MirrorAsync(HistoryMirrorParams request, CancellationToken cancellationToken = default)
+    {
+        await ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (request.Start)
+        {
+            // From the list as last read; a server that has not read it yet reads it now.
+            var rows = listed.IsEmpty ? await ReadListAsync(stop.Token).ConfigureAwait(false) ?? [] : listed.Values.ToArray();
+            StartMirror(rows, "asked");
+        }
+        lock (mirrorGate)
+        {
+            SweepRounds();
+            return new(rounds.Count > 0, reports.Values.OrderBy(report => report.Service, StringComparer.Ordinal).ToArray());
+        }
+    }
+
+    // ---- IChatReader: the list as the services give it, each row's last message from the copy; a conversation's pages from the copy ----
+
+    public async Task<Page<ChatSummary>> GetChatsAsync(string? olderThan = null, CancellationToken cancellationToken = default)
+    {
+        var page = await chats.GetChatsAsync(olderThan, cancellationToken).ConfigureAwait(false);
+        if (!ready.Task.IsCompletedSuccessfully) return page;
+        var built = new ChatSummary[page.Items.Count];
+        for (var i = 0; i < built.Length; i++)
+        {
+            listed[page.Items[i].Id] = page.Items[i];
+            built[i] = await BuildRowAsync(page.Items[i], cancellationToken).ConfigureAwait(false);
+        }
+        return page with { Items = built };
+    }
+
+    public async Task<ChatSummary> GetChatAsync(string chatId, CancellationToken cancellationToken = default)
+    {
+        var row = await chats.GetChatAsync(chatId, cancellationToken).ConfigureAwait(false);
+        if (!ready.Task.IsCompletedSuccessfully) return row;
+        listed[chatId] = row;
+        // What a client was just told, the feed says too.
+        RowSoon(chatId, read: false);
+        return await BuildRowAsync(row, cancellationToken).ConfigureAwait(false);
+    }
 
     public async Task<Page<ChatMessage>> GetMessagesAsync(string chatId, string? olderThan = null, CancellationToken cancellationToken = default)
     {
@@ -285,8 +459,22 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     /// </summary>
     public TimeSpan SentReadBack { get; init; } = TimeSpan.FromSeconds(1.5);
 
-    // Read as an open is, the person having just sent: one read of Instagram per send, and what it finds is announced as any find is.
-    private void ReadBackSent(string chatId)
+    /// <summary>A conversation a first message just made: filled now, as an open would (the person has just sent), rather than at the walk's next pass.</summary>
+    public void Started(string chatId)
+    {
+        if (!ready.Task.IsCompletedSuccessfully) return;
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(SentReadBack, stop.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            RowSoon(chatId, read: true);
+            Enqueue(chatId, Work.Open);
+        });
+    }
+
+    // Read as an open is, the person having just sent: one read of Instagram per send, and what it finds is announced as any find is. Files and scheduled
+    // sends come here too (HistoryReadBack, stage 9).
+    internal void ReadBackSent(string chatId)
     {
         if (!chatId.StartsWith(InstagramPrefix, StringComparison.Ordinal) || !held.TryGetValue(chatId, out var chat) || !chat.State.Filled) return;
         _ = Task.Run(async () =>
@@ -448,6 +636,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         {
             case RealtimeKind.MessageChanged when change.ChatId is { } chatId:
             {
+                RowSoon(chatId, read: true);
                 var chat = Chat(chatId);
                 if (!chat.State.Filled) { Enqueue(chatId, Work.Arrival); return; }
                 if (change.Ids is not { Count: > 0 } ids) { Enqueue(chatId, Work.Refresh); return; }
@@ -456,9 +645,12 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 return;
             }
             case RealtimeKind.MessageDeleted when change.ChatId is { } chatId && change.Ids is { Count: > 0 } ids:
+                RowSoon(chatId, read: true);
                 if (held.TryGetValue(chatId, out var deleting) && deleting.State.Filled) Chain(deleting, () => RemoveAsync(deleting, [.. ids], Reason.Event));
                 return;
             case RealtimeKind.ChatChanged:
+                // Every row it names is built again (a read of the router's own list), however many: a Messenger reconnect names them all.
+                foreach (var id in Named(change)) RowSoon(id, read: true);
                 foreach (var id in Named(change).Take(MaxEventIds))
                 {
                     // Instagram's arrivals come as their own events from its own reads; a read here would cost its budget for a row that moved.
@@ -467,8 +659,20 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 }
                 return;
             case RealtimeKind.ChatDeleted:
-                _ = ForgetAsync([.. Named(change).Where(held.ContainsKey)]);
+            {
+                var named = Named(change).ToArray();
+                foreach (var id in named) { listed.TryRemove(id, out _); rowsDue.TryRemove(id, out _); }
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await ForgetAsync([.. named.Where(held.ContainsKey)]).ConfigureAwait(false);
+                        await db.WriteRowsAsync([.. named.Select(id => new HistoryListRow(id, null))], stop.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception failure) when (!stop.IsCancellationRequested) { log($"history forget failed error={failure.GetType().Name}"); }
+                });
                 return;
+            }
             case RealtimeKind.Disconnected:
                 // What arrives until the service is back may have a gap below it: only a read of the newest page makes these whole again.
                 foreach (var chat in InScope(change.Scope)) chat.MarkSuspect();
@@ -476,6 +680,9 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             case RealtimeKind.Connected or RealtimeKind.ResyncRequired:
             {
                 scopeResyncs[change.Scope ?? ""] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                // Whatever the list did while the service was away: read it whole again.
+                listDue = true;
+                rowsSignal.Release();
                 var scoped = InScope(change.Scope).ToArray();
                 foreach (var chat in scoped) chat.MarkSuspect();
                 // Whatever these did while the service was away is read again: the most recently active now, the rest when opened.
@@ -535,9 +742,13 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
             {
                 var found = (await all.ConfigureAwait(false)).OfType<ChatMessage>().ToArray();
                 var missed = found.Length < reads.Length;
-                if (found.Length > 0) await KeepAsync(chat, found, reason, whole: !missed).ConfigureAwait(false);
+                // Instagram names only the newest of what arrived between two of its polls (A1, server-mirror-paths.md): its event never says the copy is
+                // whole up to it, and the conversation is read again, within the budget.
+                var partial = reason == Reason.Event && chat.ChatId.StartsWith(InstagramPrefix, StringComparison.Ordinal);
+                if (found.Length > 0) await KeepAsync(chat, found, reason, whole: !missed && !partial).ConfigureAwait(false);
                 // Something the event named is not in the copy: until a page is read, nothing above it is known whole.
                 if (missed) Suspect(chat);
+                else if (partial) Enqueue(chat.ChatId, Work.Refresh);
             }
             catch (Exception failure) when (failure is not OperationCanceledException || !stop.IsCancellationRequested)
             {
@@ -627,6 +838,7 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         try
         {
             if (chat.Forgotten) return (null, true);
+            chat.LastDifference = null;
             var state = chat.State;
             // A suspicion that comes while this reads (a provider dropping again) is not cleared by it.
             var suspicions = chat.SuspicionsNow;
@@ -682,11 +894,13 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 var newest = gathered.Count > 0 ? Position.Of(gathered[^1]) : (Position?)null;
                 var restarted = new State(true, !more, more ? cursor : null, gathered.Count > 0 ? Position.Of(gathered[0]) : null, newest, newest);
                 await WriteAsync(chat, gathered, [], restarted, reset: true, found: true).ConfigureAwait(false);
+                chat.LastDifference = new(gathered.Count, 0, 0);
                 Settle(chat, suspicions);
                 log($"history fill chat={Tag(chat.ChatId)} reason={Name(reason)} outcome=reset rows={gathered.Count} pages={pages} ms={Ms(clock)}");
                 return (page, true);
             }
-            var absent = await AbsentAsync(chat.ChatId, gathered, cancellationToken).ConfigureAwait(false);
+            var (absent, missing, changed) = await CompareAsync(chat.ChatId, gathered, state.Floor, cancellationToken).ConfigureAwait(false);
+            chat.LastDifference = new(missing, absent.Count, changed);
             var joined = state;
             var reached = true;
             if (gathered.Count > 0)
@@ -724,19 +938,31 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
     private static bool Meets(State state, IReadOnlyList<ChatMessage> gathered) =>
         state.Verified is not { } verified || gathered.Count == 0 || Position.Of(gathered[0]).CompareTo(verified) <= 0;
 
-    // The held messages a run of pages spans (strictly inside its oldest and newest, older than the grace) that the run does not have: gone on the service.
-    private async Task<IReadOnlyList<string>> AbsentAsync(string chatId, IReadOnlyList<ChatMessage> gathered, CancellationToken cancellationToken)
+    // A run of pages against what is held over its span. Absent: the held messages it spans (strictly inside its oldest and newest, older than the grace) that
+    // it does not have, gone on the service. Missing: those it has that are not held. Changed: those held otherwise (HistoryDigest.Mark: times, edit marks,
+    // reactions; never words). The last two only count, for the mirror check: the write that follows takes the service's.
+    private async Task<(IReadOnlyList<string> Absent, int Missing, int Changed)> CompareAsync(string chatId, IReadOnlyList<ChatMessage> gathered, Position? floor,
+        CancellationToken cancellationToken)
     {
-        if (gathered.Count < 2) return [];
+        if (gathered.Count == 0) return ([], 0, 0);
         var oldest = Position.Of(gathered[0]);
         var newest = Position.Of(gathered[^1]);
         var graceTicks = (DateTimeOffset.UtcNow - AbsenceGrace).UtcTicks;
-        var present = gathered.Select(message => message.Id).ToHashSet(StringComparer.Ordinal);
         var rows = await db.ReadBetweenAsync(chatId, gathered[0].Timestamp.ToUnixTimeMilliseconds(), gathered[^1].Timestamp.ToUnixTimeMilliseconds(), 5000, cancellationToken)
             .ConfigureAwait(false);
-        return rows.Where(row => !row.Removed && !present.Contains(row.MessageId)).Select(Message).OfType<ChatMessage>()
+        var holding = rows.Where(row => !row.Removed).Select(Message).OfType<ChatMessage>().DistinctBy(message => message.Id).ToDictionary(message => message.Id, StringComparer.Ordinal);
+        int missing = 0, changed = 0;
+        foreach (var message in gathered)
+        {
+            if (!holding.TryGetValue(message.Id, out var was)) { if (floor is not { } bottom || Position.Of(message).CompareTo(bottom) >= 0) missing++; }
+            else if (HistoryDigest.Mark(was) != HistoryDigest.Mark(message)) changed++;
+        }
+        if (gathered.Count < 2) return ([], missing, changed);
+        var present = gathered.Select(message => message.Id).ToHashSet(StringComparer.Ordinal);
+        var absent = holding.Values.Where(message => !present.Contains(message.Id))
             .Where(message => Position.Of(message) is var at && at.CompareTo(oldest) > 0 && at.CompareTo(newest) < 0 && at.Ticks < graceTicks)
             .Select(message => message.Id).ToArray();
+        return (absent, missing, changed);
     }
 
     // Messages strictly before a position, from the copy, reading further back from the service while the copy runs out before `limit`.
@@ -944,6 +1170,15 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 if (messages.Length > MaxEventIds || reset) sequence.Append(new RealtimeEvent(RealtimeKind.ChatChanged, chat.ChatId, [chat.ChatId], ReceivedAt: DateTimeOffset.UtcNow));
             }
         }
+        // The row's last message is the copy's: built again from it (B2).
+        if (next.Filled) RowSoon(chat.ChatId, read: false);
+        // Every message held went while older ones lie before them: nothing is left to serve a newest page from, so it is read again from the service's
+        // newest (the server's own copy emptied by removals, ROADMAP.md).
+        if (written.Removed.Count > 0 && next.Filled && !next.Complete && await db.CountAsync(chat.ChatId, CancellationToken.None).ConfigureAwait(false) == 0)
+        {
+            chat.MarkSuspect();
+            Enqueue(chat.ChatId, Work.Refresh);
+        }
         return written;
     }
 
@@ -966,8 +1201,8 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
 
     // ---- The background: filling every conversation, catching up, checking ----
 
-    private enum Work { Open = 0, Arrival = 1, Check = 2, Refresh = 3, CatchUp = 4, Initial = 5 }
-    private enum Reason { Open, Event, Arrival, Check, Refresh, CatchUp, Initial, Older, Mutation }
+    private enum Work { Open = 0, Arrival = 1, Check = 2, Refresh = 3, CatchUp = 4, Initial = 5, Mirror = 6 }
+    private enum Reason { Open, Event, Arrival, Check, Refresh, CatchUp, Initial, Older, Mutation, Mirror }
 
     private void Enqueue(string chatId, Work work) => queue.Add(chatId, work);
 
@@ -981,42 +1216,63 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
                 var service = Service(item.ChatId);
                 if (next.TryGetValue(service, out var at) && at > Environment.TickCount64) await Task.Delay(TimeSpan.FromMilliseconds(at - Environment.TickCount64), stop.Token).ConfigureAwait(false);
                 var chat = Chat(item.ChatId);
-                if (chat.Forgotten) continue;
+                if (chat.Forgotten) { Mirrored(item.ChatId, null); continue; }
                 if (item.Work == Work.Check)
                 {
-                    var summary = await chats.GetChatAsync(item.ChatId, stop.Token).ConfigureAwait(false);
+                    ChatSummary summary;
+                    // A row the router cannot read (four Messenger conversations failed this five times each, every walk, 2026-10-29) is left to the walk,
+                    // which reads the conversation from the row it lists.
+                    try { summary = await chats.GetChatAsync(item.ChatId, stop.Token).ConfigureAwait(false); }
+                    catch (Exception failure) when (failure is not OperationCanceledException)
+                    {
+                        log($"history check unreadable chat={Tag(item.ChatId)} error={failure.GetType().Name}");
+                        continue;
+                    }
                     // Only a conversation that moved past what is held is read again (a read or a mute moves nothing held), and only once for each move: a
                     // reaction moves the list past the newest message for good, and would otherwise be read again at every walk.
-                    if (summary.LastActivity is not { } last || last.UtcTicks <= chat.SeenActivity
-                        || chat.State.Newest is { } newest && last.UtcTicks <= newest.Ticks + TimeSpan.TicksPerSecond * 2) continue;
-                    chat.SeenActivity = last.UtcTicks;
+                    if (summary.LastActivity is not { } last || !Moved(chat, last)) continue;
                 }
-                // Opening is a read someone asked for; everything else is the server's own, and waits while the service's budget says so, page by page.
+                // Opening is a read someone asked for; everything else is the server's own, and waits while the service's budget says so, page by page. A
+                // mirror check's read the budget does not allow is counted as not read rather than put off.
                 var asked = item.Work == Work.Open;
                 if (!asked && !mayReadUnasked(item.ChatId))
                 {
-                    queue.Later(item.ChatId, item.Work, TimeSpan.FromMinutes(10), item.Tries);
+                    if (item.Work == Work.Mirror) Mirrored(item.ChatId, null);
+                    else queue.Later(item.ChatId, item.Work, TimeSpan.FromMinutes(10), item.Tries);
                     continue;
                 }
                 var (_, taken) = await RefreshAsync(chat, item.Work switch
                 {
                     Work.Open => Reason.Open, Work.Arrival => Reason.Arrival, Work.Check => Reason.Check, Work.CatchUp => Reason.CatchUp,
-                    Work.Initial => Reason.Initial, _ => Reason.Refresh,
+                    Work.Initial => Reason.Initial, Work.Mirror => Reason.Mirror, _ => Reason.Refresh,
                 }, stop.Token, asked ? null : () => mayReadUnasked(item.ChatId)).ConfigureAwait(false);
                 next[service] = Environment.TickCount64 + (long)Pace.TotalMilliseconds;
-                if (!taken && item.Tries < 5) queue.Later(item.ChatId, item.Work, RetryAfter * (1 << item.Tries), item.Tries + 1);
+                // Whatever the read was asked for, it compared the service's newest page with the copy: a mirror check waiting on this conversation counts it.
+                Mirrored(item.ChatId, taken ? chat.LastDifference : null);
+                if (!taken && item.Work != Work.Mirror && item.Tries < 5) queue.Later(item.ChatId, item.Work, RetryAfter * (1 << item.Tries), item.Tries + 1);
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
             catch (Exception failure)
             {
                 log($"history work failed chat={Tag(item.ChatId)} work={item.Work} error={failure.GetType().Name}");
-                if (item.Tries < 5) queue.Later(item.ChatId, item.Work, RetryAfter * (1 << item.Tries), item.Tries + 1);
+                if (item.Work != Work.Mirror && item.Tries < 5) queue.Later(item.ChatId, item.Work, RetryAfter * (1 << item.Tries), item.Tries + 1);
             }
+            // However the work ended (a check that found no move, a read put off, merged into other work), a mirror check waiting on it is not left to wait
+            // out its 20 minutes; one already counted is not counted again (review, 2026-10-30).
+            finally { Mirrored(item.ChatId, null); }
         }
     }
 
-    // Walks the list now and then: a conversation not held yet is filled (the most recently active first), and one whose list moved past what is held is
-    // checked. Instagram's rows are compared here, from the list it already holds, rather than read one by one.
+    // Whether the list moved past what is held, newly: then it is taken as seen, and the caller reads the conversation once for it.
+    private static bool Moved(Held chat, DateTimeOffset last)
+    {
+        if (last.UtcTicks <= chat.SeenActivity || chat.State.Newest is { } newest && last.UtcTicks <= newest.Ticks + TimeSpan.TicksPerSecond * 2) return false;
+        chat.SeenActivity = last.UtcTicks;
+        return true;
+    }
+
+    // Walks the list now and then: every row is kept for the feed, a conversation not held yet is filled (the most recently active first), one whose list
+    // moved past what is held is read again, and the most recently active of each service are compared with it (the mirror check, stage 9).
     private async Task WalkAsync()
     {
         try { await Task.Delay(WalkDelay, stop.Token).ConfigureAwait(false); }
@@ -1024,42 +1280,311 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
         while (!stop.IsCancellationRequested)
         {
             var clock = Stopwatch.GetTimestamp();
-            int listed = 0, filling = 0, checking = 0;
+            int listedRows = 0, filling = 0, checking = 0;
             try
             {
-                string? cursor = null;
-                var seen = new HashSet<string>(StringComparer.Ordinal);
-                for (var pages = 0; pages < 200; pages++)
+                var rows = await ReadListAsync(stop.Token).ConfigureAwait(false) ?? [];
+                foreach (var row in rows)
                 {
-                    var page = await chats.GetChatsAsync(cursor, stop.Token).ConfigureAwait(false);
-                    foreach (var row in page.Items)
-                    {
-                        // Spam is read only when someone opens it.
-                        if (!seen.Add(row.Id) || row.IsSpam) continue;
-                        listed++;
-                        var chat = Chat(row.Id);
-                        if (!chat.State.Filled) { Enqueue(row.Id, Work.Initial); filling++; continue; }
-                        if (row.LastActivity is not { } last || last.UtcTicks <= chat.SeenActivity
-                            || chat.State.Newest is { } newest && last.UtcTicks <= newest.Ticks + TimeSpan.TicksPerSecond * 2) continue;
-                        checking++;
-                        if (row.Id.StartsWith(InstagramPrefix, StringComparison.Ordinal))
-                        {
-                            chat.SeenActivity = last.UtcTicks;
-                            Enqueue(row.Id, Work.Refresh);
-                        }
-                        else Enqueue(row.Id, Work.Check);
-                    }
-                    if (!page.HasMore || page.OldestCursor is null || page.OldestCursor == cursor) break;
-                    cursor = page.OldestCursor;
+                    // Spam is read only when someone opens it.
+                    if (row.IsSpam) continue;
+                    listedRows++;
+                    var chat = Chat(row.Id);
+                    if (!chat.State.Filled) { Enqueue(row.Id, Work.Initial); filling++; continue; }
+                    // Read from the row in hand: asking the router for it again failed for some Messenger conversations every time.
+                    if (row.LastActivity is not { } last || !Moved(chat, last)) continue;
+                    checking++;
+                    Enqueue(row.Id, Work.Refresh);
                 }
-                log($"history walk listed={listed} filling={filling} checking={checking} held={held.Values.Count(h => h.State.Filled)} queued={queue.Count} seq={db.Seq} bytes={db.Bytes} ms={Ms(clock)}");
+                log($"history walk listed={listedRows} filling={filling} checking={checking} held={held.Values.Count(h => h.State.Filled)} queued={queue.Count} seq={db.Seq} bytes={db.Bytes} ms={Ms(clock)}");
+                StartMirror(rows, "walk");
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
-            catch (Exception failure) { log($"history walk failed listed={listed} error={failure.GetType().Name}"); }
+            catch (Exception failure) { log($"history walk failed listed={listedRows} error={failure.GetType().Name}"); }
             try { await Task.Delay(WalkEvery, stop.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { return; }
         }
     }
+
+    // ---- The list rows (stage 9, B1 and B2) ----
+
+    // A row to build again soon. Read: ask the router for it first (after an event). One signal however many are asked for at once: a Messenger reconnect
+    // names every conversation, and a release each made as many empty passes of the loop (review, 2026-10-30).
+    private void RowSoon(string chatId, bool read)
+    {
+        rowsDue.AddOrUpdate(chatId, read, (_, was) => was || read);
+        if (Volatile.Read(ref rowsIdle).Task.IsCompleted) Interlocked.Exchange(ref rowsIdle, new(TaskCreationOptions.RunContinuationsAsynchronously));
+        if (Interlocked.Exchange(ref rowsSignaled, 1) == 0) rowsSignal.Release();
+    }
+
+    private int rowsSignaled;
+
+    // List reads and row writes one at a time: a list read seconds long overwrote rows written meanwhile from fresher events, and marked a conversation that
+    // began meanwhile as gone (review, 2026-10-30).
+    private readonly SemaphoreSlim rowsGate = new(1, 1);
+
+    // A whole read of the list on a reconnect at most this often; the walk reads it every half hour anyway. Each reads Instagram's inbox when its list is
+    // more than a few seconds old, as its poll does.
+    private long listReadAt;
+    private static readonly long ListReadEvery = (long)TimeSpan.FromMinutes(10).TotalMilliseconds;
+
+    // Completed while no row waits to be built: a feed read waits for it (a little), so a row asked for by an event just before is in what it hands out.
+    private TaskCompletionSource rowsIdle = CompletedSource();
+
+    private static TaskCompletionSource CompletedSource()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        done.SetResult();
+        return done;
+    }
+
+    // What events and rows already under way have to write, waited for (at most SettleWait), before the feed is read.
+    private async Task FeedSettledAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.WhenAll(held.Values.Select(chat => chat.Tail)).WaitAsync(SettleWait, cancellationToken).ConfigureAwait(false);
+            await Volatile.Read(ref rowsIdle).Task.WaitAsync(SettleWait, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { }
+    }
+
+    // Builds the rows asked for, a moment after the first ask so a burst builds each once, and the whole list when asked.
+    private async Task RowsAsync()
+    {
+        while (!stop.IsCancellationRequested)
+        {
+            try
+            {
+                await rowsSignal.WaitAsync(stop.Token).ConfigureAwait(false);
+                await Task.Delay(RowsDelay, stop.Token).ConfigureAwait(false);
+                Volatile.Write(ref rowsSignaled, 0);
+                if (listDue)
+                {
+                    listDue = false;
+                    if (Environment.TickCount64 - Interlocked.Read(ref listReadAt) >= ListReadEvery || !rowsReady.Task.IsCompleted)
+                        await ReadListAsync(stop.Token).ConfigureAwait(false);
+                }
+                await rowsGate.WaitAsync(stop.Token).ConfigureAwait(false);
+                try
+                {
+                    var due = new List<(string Id, bool Read)>();
+                    foreach (var id in rowsDue.Keys) if (rowsDue.TryRemove(id, out var read)) due.Add((id, read));
+                    var rows = new List<ChatSummary>(due.Count);
+                    foreach (var (id, read) in due)
+                    {
+                        ChatSummary? row = null;
+                        // Read from the router after an event, or for one not listed since the last whole read (a conversation begun since). Never
+                        // Instagram's: its row can come from Instagram itself (a GetThread on the real account) when its list is a few seconds old, a read
+                        // outside its budget nobody asked for (review, 2026-10-30). Its rows come from the list reads, their last line from the copy.
+                        if ((read || !listed.ContainsKey(id)) && !id.StartsWith(InstagramPrefix, StringComparison.Ordinal))
+                        {
+                            try { row = listed[id] = await chats.GetChatAsync(id, stop.Token).ConfigureAwait(false); }
+                            catch (Exception failure) when (failure is not OperationCanceledException) { }
+                        }
+                        if ((row ?? listed.GetValueOrDefault(id)) is { } known) rows.Add(known);
+                    }
+                    await StoreRowsAsync(rows, stop.Token, announce: true).ConfigureAwait(false);
+                }
+                finally { rowsGate.Release(); }
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
+            catch (Exception failure) { log($"history rows failed error={failure.GetType().Name}"); }
+            finally { if (rowsDue.IsEmpty) Volatile.Read(ref rowsIdle).TrySetResult(); }
+        }
+    }
+
+    // Rows a whole read did not list, and the read before it did not either: only those leave. A service can hand back a part of its list as if whole
+    // right after it connects (its restored rows), and one read alone would drop the rest for every client until the next (review, 2026-10-30).
+    private HashSet<string> missingOnce = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Reads the services' whole list, keeps every row for the feed, and lets go of rows no longer on it (only for a service that answered with some rows,
+    /// and only those two whole reads in a row left out). Null when it could not be read.
+    /// </summary>
+    private async Task<IReadOnlyList<ChatSummary>?> ReadListAsync(CancellationToken cancellationToken)
+    {
+        var clock = Stopwatch.GetTimestamp();
+        await rowsGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Interlocked.Exchange(ref listReadAt, Environment.TickCount64);
+            string? cursor = null;
+            var rows = new Dictionary<string, ChatSummary>(StringComparer.Ordinal);
+            var unavailable = new HashSet<string>(StringComparer.Ordinal);
+            var whole = false;
+            for (var pages = 0; pages < 200; pages++)
+            {
+                var page = await chats.GetChatsAsync(cursor, cancellationToken).ConfigureAwait(false);
+                var added = 0;
+                foreach (var row in page.Items) if (rows.TryAdd(row.Id, row)) added++;
+                unavailable.UnionWith(page.UnavailableScopes ?? []);
+                if (!page.HasMore) { whole = true; break; }
+                // A service that did not answer hands back a retry cursor for as long as it does not (ConversationSync does the same).
+                if (page.OldestCursor is null || page.OldestCursor == cursor || unavailable.Count > 0 && added == 0) break;
+                cursor = page.OldestCursor;
+            }
+            foreach (var row in rows.Values) listed[row.Id] = row;
+            var changed = await StoreRowsAsync([.. rows.Values], cancellationToken).ConfigureAwait(false);
+            var gone = 0;
+            if (whole)
+            {
+                var answered = rows.Keys.Select(Service).ToHashSet(StringComparer.Ordinal);
+                var missing = (await db.ReadListedAsync(cancellationToken).ConfigureAwait(false))
+                    .Where(id => !rows.ContainsKey(id) && answered.Contains(Service(id)) && !unavailable.Any(scope => id.StartsWith(scope, StringComparison.Ordinal)))
+                    .ToHashSet(StringComparer.Ordinal);
+                var left = missing.Where(missingOnce.Contains).ToArray();
+                missingOnce = missing;
+                foreach (var id in left) listed.TryRemove(id, out _);
+                gone = (await db.WriteRowsAsync([.. left.Select(id => new HistoryListRow(id, null))], cancellationToken).ConfigureAwait(false)).Count;
+            }
+            log($"history rows listed={rows.Count} changed={changed} gone={gone} whole={(whole ? 1 : 0)} unavailable={unavailable.Count} ms={Ms(clock)}");
+            return [.. rows.Values];
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            log($"history rows failed error={failure.GetType().Name}");
+            return null;
+        }
+        finally
+        {
+            rowsGate.Release();
+            rowsReady.TrySetResult();
+        }
+    }
+
+    // Keeps rows as built, and with [announce] puts each that changed in the event sequence for clients of 25 (EventKinds.Row): what a row did by itself (its
+    // copy moved, an event named it) reaches a connected client's list with no read. A whole read of the list announces nothing (on the first after this
+    // version it changes every row, which would push real events out of the ring); clients take those from the feed when they next read it.
+    private async Task<int> StoreRowsAsync(IReadOnlyList<ChatSummary> rows, CancellationToken cancellationToken, bool announce = false)
+    {
+        if (rows.Count == 0) return 0;
+        var built = new Dictionary<string, ChatSummary>(StringComparer.Ordinal);
+        foreach (var row in rows) built[row.Id] = await BuildRowAsync(row, cancellationToken).ConfigureAwait(false);
+        var changed = await db.WriteRowsAsync([.. built.Values.Select(row => new HistoryListRow(row.Id, JsonSerializer.SerializeToUtf8Bytes(row, ProtocolJson.Options)))],
+            cancellationToken).ConfigureAwait(false);
+        if (announce && events is { } sequence)
+            foreach (var row in changed) sequence.AppendRow(new(row.ChatId, built.GetValueOrDefault(row.ChatId)));
+        return changed.Count;
+    }
+
+    /// <summary>
+    /// A conversation's list row as served (owner's D1, 2026-10-30): the service's row, its last message from the copy, so the list never says what the thread
+    /// does not hold. The service's own line stays where it says what no message does (a reaction, in the service's words), and where nothing is held yet.
+    /// A line newer than anything held is the copy being behind: the row says what is held, and the conversation is read so the two meet.
+    /// </summary>
+    private async Task<ChatSummary> BuildRowAsync(ChatSummary row, CancellationToken cancellationToken)
+    {
+        if (!held.TryGetValue(row.Id, out var chat) || !chat.State.Filled) return row;
+        try
+        {
+            var service = row.Preview;
+            // The message the line names as the copy holds it, or as the event naming it is reading it now (built a moment before, the row said the message
+            // before it, and a client that read the feed then kept that).
+            if (service is not null && (await PendingAsync(row.Id, service.Id, cancellationToken).ConfigureAwait(false)
+                    ?? await HeldMessageAsync(row.Id, service.Id, cancellationToken).ConfigureAwait(false)) is { } same)
+                return row with { Preview = same };
+            var rows = await db.ReadNewestAsync(row.Id, 8, cancellationToken).ConfigureAwait(false);
+            var last = Sorted(rows.Select(Message).OfType<ChatMessage>()).LastOrDefault(message => !message.IsHidden);
+            if (last is null) return row;
+            if (service is null || service.Timestamp <= last.Timestamp.AddSeconds(2)) return row with { Preview = last };
+            if (IsReactionLine(service)) return row;
+            if (row.LastActivity is { } moved && Moved(chat, moved)) Enqueue(row.Id, Work.Refresh);
+            return row with { Preview = last };
+        }
+        catch (Exception failure) when (failure is not OperationCanceledException) { return row; }
+    }
+
+    // A service's line that says a reaction rather than a message: Google's "😂 to "…"", and the words Meta's apps use.
+    private static bool IsReactionLine(ChatMessage line) =>
+        line.Text is { Length: > 0 } text && (GoogleReaction().IsMatch(text) || text.Contains("reacted ", StringComparison.OrdinalIgnoreCase));
+
+    [System.Text.RegularExpressions.GeneratedRegex("^\\S{1,16} to [\"“].*[\"”]$")]
+    private static partial System.Text.RegularExpressions.Regex GoogleReaction();
+
+    // ---- The mirror check (stage 9, A2) ----
+
+    // One service's check under way: the conversations it waits on, and what those that were read found.
+    private sealed class MirrorRound(string service, int asked, string reason)
+    {
+        public string Service { get; } = service;
+        public string Why { get; } = reason;
+        public int Pending = asked;
+        public int Checked, Differed, Missing, Extra, Changed, Skipped;
+        public long Started { get; } = Stopwatch.GetTimestamp();
+    }
+
+    /// <summary>What a read of a conversation's newest page found against the copy (counts only).</summary>
+    internal sealed record Difference(int Missing, int Extra, int Changed)
+    {
+        public bool Any => Missing > 0 || Extra > 0 || Changed > 0;
+    }
+
+    // Starts a check of each service that has none under way: its most recently active conversations held whole, each read once, a second apart per service
+    // and Instagram's only while its budget allows (owner's D3).
+    private void StartMirror(IReadOnlyList<ChatSummary> rows, string why)
+    {
+        var started = new List<string>();
+        lock (mirrorGate)
+        {
+            SweepRounds();
+            foreach (var group in rows.Where(row => !row.IsSpam && held.TryGetValue(row.Id, out var chat) && chat.State.Filled && !mirroring.ContainsKey(row.Id))
+                         .GroupBy(row => Service(row.Id), StringComparer.Ordinal))
+            {
+                if (rounds.ContainsKey(group.Key)) continue;
+                var chosen = group.OrderByDescending(row => row.LastActivity ?? DateTimeOffset.MinValue).Take(MirrorPerService).Select(row => row.Id).ToArray();
+                if (chosen.Length == 0) continue;
+                var round = new MirrorRound(group.Key, chosen.Length, why);
+                rounds[group.Key] = round;
+                foreach (var id in chosen) mirroring[id] = round;
+                started.Add(group.Key + "=" + chosen.Length);
+                foreach (var id in chosen) Enqueue(id, Work.Mirror);
+            }
+        }
+        if (started.Count > 0) log($"history mirror started reason={why} {string.Join(' ', started)}");
+    }
+
+    // A conversation a check waits on was read (with what it found), or could not be (null).
+    private void Mirrored(string chatId, Difference? found)
+    {
+        if (!mirroring.TryRemove(chatId, out var round)) return;
+        lock (mirrorGate)
+        {
+            if (found is null) round.Skipped++;
+            else
+            {
+                round.Checked++;
+                if (found.Any)
+                {
+                    round.Differed++;
+                    round.Missing += found.Missing; round.Extra += found.Extra; round.Changed += found.Changed;
+                    log($"history mirror chat={Tag(chatId)} missing={found.Missing} extra={found.Extra} changed={found.Changed}");
+                }
+            }
+            if (--round.Pending <= 0) Finish(round);
+        }
+    }
+
+    // Reports a check whose reads all came back, and one that waited past its time with the rest counted as not read. Caller holds mirrorGate.
+    private void SweepRounds()
+    {
+        foreach (var round in rounds.Values.Where(round => Stopwatch.GetElapsedTime(round.Started) > MirrorTimeout).ToArray())
+        {
+            foreach (var (id, waiting) in mirroring.ToArray())
+                if (ReferenceEquals(waiting, round) && mirroring.TryRemove(id, out _)) { round.Skipped++; round.Pending--; }
+            Finish(round);
+        }
+    }
+
+    // Caller holds mirrorGate.
+    private void Finish(MirrorRound round)
+    {
+        if (!rounds.TryGetValue(round.Service, out var current) || !ReferenceEquals(current, round)) return;
+        rounds.Remove(round.Service);
+        reports[round.Service] = new(round.Service, DateTimeOffset.UtcNow, round.Checked, round.Differed, round.Missing, round.Extra, round.Changed, round.Skipped);
+        log($"history mirror service={round.Service} reason={round.Why} checked={round.Checked} differed={round.Differed} missing={round.Missing} extra={round.Extra} changed={round.Changed} skipped={round.Skipped} ms={Ms(round.Started)}");
+    }
+
 
     // ---- Small parts ----
 
@@ -1169,6 +1694,8 @@ internal sealed class ConversationHistory : IWholeHistory, IChatReader, ILinkPre
 
         public long SuspicionsNow { get { lock (suspectLock) return Suspicions; } }
         public volatile bool Forgotten;
+        // What its last read of the service found against what was held (for the mirror check); null when that read was not taken.
+        public Difference? LastDifference;
 
         public static Held From(HistoryChatRow row)
         {

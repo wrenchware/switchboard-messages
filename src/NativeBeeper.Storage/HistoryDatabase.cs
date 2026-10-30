@@ -29,6 +29,23 @@ public sealed record HistoryWritten(long Seq, IReadOnlyList<string> Put, IReadOn
     public bool Changed => Put.Count > 0 || Removed.Count > 0 || Reset;
 }
 
+/// <summary>A conversation's list row to keep (its bytes), or with no bytes, a row that left the list. Bytes equal to what is kept take no change number.</summary>
+public sealed record HistoryListRow(string ChatId, byte[]? Payload);
+
+/// <summary>A list row the feed hands on: the change number it took, and its bytes, or none for one that left the list.</summary>
+public sealed record HistoryFeedRow(string ChatId, long Seq, byte[]? Payload);
+
+/// <summary>
+/// One conversation's part of a feed read: the messages changed in it after the read's start (removed marks included); the number a copy of it must have
+/// reached for them to patch it (<paramref name="From"/>: its newest change still numbered at or before the start, or where it was started over within the
+/// span, in which case only what changed after that is carried); and the newest number among them.
+/// </summary>
+public sealed record HistoryFeedChat(string ChatId, long From, long To, IReadOnlyList<HistoryRow> Messages);
+
+/// <summary>What changed in the whole store after a number, list rows and messages together, up to <paramref name="Through"/>; <paramref name="More"/> says
+/// there is more after it.</summary>
+public sealed record HistoryFeedRead(long Through, bool More, IReadOnlyList<HistoryFeedRow> Rows, IReadOnlyList<HistoryFeedChat> Chats);
+
 /// <summary>
 /// The server's whole copy of every conversation (SWITCHBOARD.md stage 8), in <c>history.db</c> beside its other stores. Each message and each conversation's
 /// state is sealed with AES-GCM under a key of this file's own, which the platform's protector keeps; conversation and message ids are stored only as keyed
@@ -41,7 +58,8 @@ public sealed record HistoryWritten(long Seq, IReadOnlyList<string> Put, IReadOn
 /// </remarks>
 public sealed class HistoryDatabase(string path, IStateProtector protector) : IDisposable
 {
-    private const int Version = 1;
+    // 2 (stage 9) adds the list rows, numbered in the same sequence as the messages.
+    private const int Version = 2;
     private const int RecordLimit = 4 * 1024 * 1024;
     private readonly SemaphoreSlim gate = new(1, 1);
     private SqliteConnection? connection;
@@ -80,7 +98,7 @@ public sealed class HistoryDatabase(string path, IStateProtector protector) : ID
                 await Task.Run(() =>
                 {
                     using var transaction = connection!.BeginTransaction();
-                    Execute(transaction, "DELETE FROM messages; DELETE FROM chats; DELETE FROM meta;");
+                    Execute(transaction, "DELETE FROM messages; DELETE FROM chats; DELETE FROM rows; DELETE FROM meta;");
                     SetMeta(transaction, "key", sealedKey);
                     SetMeta(transaction, "epoch", epoch);
                     SetMeta(transaction, "seq", 0L);
@@ -235,6 +253,7 @@ public sealed class HistoryDatabase(string path, IStateProtector protector) : ID
             return await Task.Run(() =>
             {
                 var forgotten = 0;
+                var seq = Seq;
                 using var transaction = connection!.BeginTransaction();
                 foreach (var chatId in chatIds)
                 {
@@ -243,12 +262,237 @@ public sealed class HistoryDatabase(string path, IStateProtector protector) : ID
                     command.CommandText = "DELETE FROM messages WHERE chat=$chat; DELETE FROM chats WHERE id=$chat;";
                     command.Parameters.AddWithValue("$chat", ChatKey(chatId));
                     forgotten += command.ExecuteNonQuery() > 0 ? 1 : 0;
+                    // Its list row says it went, with a number, so a client following the feed lets the conversation go too.
+                    MarkRowGone(transaction, chatId, ref seq);
                 }
+                if (seq != Seq) SetMeta(transaction, "seq", seq);
                 transaction.Commit();
+                Seq = seq;
                 return forgotten;
             }, CancellationToken.None).ConfigureAwait(false);
         }
         finally { gate.Release(); }
+    }
+
+    /// <summary>
+    /// Keeps list rows (stage 9): each that differs from what is kept, or that leaves the list, takes the next change number. Returns those that changed,
+    /// with their numbers.
+    /// </summary>
+    public async Task<IReadOnlyList<HistoryFeedRow>> WriteRowsAsync(IReadOnlyList<HistoryListRow> rows, CancellationToken cancellationToken = default)
+    {
+        if (rows.Count == 0) return [];
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Ready();
+            return await Task.Run(() =>
+            {
+                var changed = new List<HistoryFeedRow>();
+                var seq = Seq;
+                using var transaction = connection!.BeginTransaction();
+                using var find = connection.CreateCommand();
+                find.Transaction = transaction;
+                find.CommandText = "SELECT hash, removed FROM rows WHERE id=$id";
+                var findId = find.Parameters.Add("$id", SqliteType.Text);
+                using var upsert = connection.CreateCommand();
+                upsert.Transaction = transaction;
+                upsert.CommandText = "INSERT INTO rows(id, seq, removed, hash, payload) VALUES($id, $seq, 0, $hash, $payload) " +
+                    "ON CONFLICT(id) DO UPDATE SET seq=excluded.seq, removed=0, hash=excluded.hash, payload=excluded.payload";
+                var id = upsert.Parameters.Add("$id", SqliteType.Text);
+                var rowSeq = upsert.Parameters.Add("$seq", SqliteType.Integer);
+                var hash = upsert.Parameters.Add("$hash", SqliteType.Blob);
+                var payload = upsert.Parameters.Add("$payload", SqliteType.Blob);
+                // The last word for each conversation wins.
+                var last = new Dictionary<string, HistoryListRow>(StringComparer.Ordinal);
+                foreach (var row in rows) last[row.ChatId] = row;
+                foreach (var row in last.Values)
+                {
+                    if (row.Payload is null)
+                    {
+                        if (MarkRowGone(transaction, row.ChatId, ref seq)) changed.Add(new(row.ChatId, seq, null));
+                        continue;
+                    }
+                    if (row.Payload.Length > RecordLimit) continue;
+                    var rowId = RowKey(row.ChatId);
+                    var digest = Digest(row.Payload);
+                    findId.Value = rowId;
+                    using (var reader = find.ExecuteReader())
+                    {
+                        if (reader.Read() && reader.GetInt64(1) == 0 && reader[0] is byte[] was && was.AsSpan().SequenceEqual(digest)) continue;
+                    }
+                    id.Value = rowId; rowSeq.Value = ++seq; hash.Value = digest; payload.Value = Seal(rowId, RowPayload(row.ChatId, row.Payload));
+                    upsert.ExecuteNonQuery();
+                    changed.Add(new(row.ChatId, seq, row.Payload));
+                }
+                if (seq != Seq) SetMeta(transaction, "seq", seq);
+                transaction.Commit();
+                Seq = seq;
+                return (IReadOnlyList<HistoryFeedRow>)changed;
+            }, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally { gate.Release(); }
+    }
+
+    /// <summary>The ids of every row on the list now (not those that left it), so a whole read of the list can say which left it.</summary>
+    public async Task<IReadOnlyList<string>> ReadListedAsync(CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Ready();
+            return await Task.Run(() =>
+            {
+                var ids = new List<string>();
+                using var command = connection!.CreateCommand();
+                command.CommandText = "SELECT id, payload FROM rows WHERE removed=0";
+                using var reader = command.ExecuteReader();
+                while (reader.Read())
+                    if (Open(reader.GetString(0), (byte[])reader[1]) is { } plain && ReadRowPayload(plain, out _) is { } chatId) ids.Add(chatId);
+                return (IReadOnlyList<string>)ids;
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally { gate.Release(); }
+    }
+
+    /// <summary>
+    /// What changed after <paramref name="since"/>, list rows and messages together in the order of their numbers, at most <paramref name="limit"/> items or
+    /// about <paramref name="maxBytes"/> (one number is never split between two reads), read under the one gate so no write falls between. With
+    /// <paramref name="rowsOnly"/> only list rows: how a client that holds nothing starts, since every message held comes after 0.
+    /// </summary>
+    public async Task<HistoryFeedRead> ReadFeedAsync(long since, int limit, long maxBytes, bool rowsOnly = false, CancellationToken cancellationToken = default)
+    {
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            Ready();
+            return await Task.Run(() =>
+            {
+                // Where this read ends: the numbers after `since` in order, as many as fit.
+                var through = since;
+                var more = false;
+                using (var numbers = connection!.CreateCommand())
+                {
+                    numbers.CommandText = rowsOnly
+                        ? "SELECT seq, length(payload) FROM rows WHERE seq>$since ORDER BY seq LIMIT $limit"
+                        : "SELECT seq, n FROM (SELECT seq, length(payload) AS n FROM messages WHERE seq>$since UNION ALL SELECT seq, length(payload) FROM rows WHERE seq>$since " +
+                          "UNION ALL SELECT reset_seq, 0 FROM chats WHERE reset_seq>$since) ORDER BY seq LIMIT $limit";
+                    numbers.Parameters.AddWithValue("$since", since);
+                    numbers.Parameters.AddWithValue("$limit", limit + 1);
+                    using var reader = numbers.ExecuteReader();
+                    long bytes = 0;
+                    var count = 0;
+                    while (reader.Read())
+                    {
+                        var seq = reader.GetInt64(0);
+                        var size = reader.IsDBNull(1) ? 0 : reader.GetInt64(1);
+                        if (seq != through && (count >= limit || count > 0 && bytes + size > maxBytes)) { more = true; break; }
+                        bytes += size;
+                        count++;
+                        through = seq;
+                    }
+                }
+                // The loop ends without a cut when its last rows repeat a number (a reset's number is its last put's): whether anything lies past where it
+                // stopped is asked outright, or a page could take everything up to the store's number (review, 2026-10-30).
+                if (!more)
+                {
+                    using var after = connection.CreateCommand();
+                    after.CommandText = rowsOnly ? "SELECT EXISTS(SELECT 1 FROM rows WHERE seq>$through)"
+                        : "SELECT EXISTS(SELECT 1 FROM messages WHERE seq>$through) OR EXISTS(SELECT 1 FROM rows WHERE seq>$through) " +
+                          "OR EXISTS(SELECT 1 FROM chats WHERE reset_seq>$through)";
+                    after.Parameters.AddWithValue("$through", through);
+                    more = Convert.ToInt64(after.ExecuteScalar()) != 0 && through > since;
+                }
+                if (!more) through = Math.Max(through, Seq);
+                var rows = new List<HistoryFeedRow>();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT id, seq, removed, payload FROM rows WHERE seq>$since AND seq<=$through ORDER BY seq";
+                    command.Parameters.AddWithValue("$since", since);
+                    command.Parameters.AddWithValue("$through", through);
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        if (Open(reader.GetString(0), (byte[])reader[3]) is not { } plain || ReadRowPayload(plain, out var bytes) is not { } chatId) continue;
+                        rows.Add(new(chatId, reader.GetInt64(1), reader.GetInt64(2) != 0 ? null : bytes ?? []));
+                    }
+                }
+                if (rowsOnly) return new HistoryFeedRead(through, more, rows, []);
+                // The conversations that changed, by the keys their messages are filed under.
+                var names = new Dictionary<string, (string ChatId, long ResetSeq)>(StringComparer.Ordinal);
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT id, reset_seq, payload FROM chats WHERE id IN (SELECT DISTINCT chat FROM messages WHERE seq>$since AND seq<=$through) " +
+                        "OR reset_seq>$since AND reset_seq<=$through";
+                    command.Parameters.AddWithValue("$since", since);
+                    command.Parameters.AddWithValue("$through", through);
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                        if (Open(reader.GetString(0), (byte[])reader[2]) is { } plain && ReadChatPayload(plain, out _) is { } chatId)
+                            names[reader.GetString(0)] = (chatId, reader.GetInt64(1));
+                }
+                var messages = new Dictionary<string, List<HistoryRow>>(StringComparer.Ordinal);
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT id, chat, ord, seq, removed, payload FROM messages WHERE seq>$since AND seq<=$through ORDER BY seq";
+                    command.Parameters.AddWithValue("$since", since);
+                    command.Parameters.AddWithValue("$through", through);
+                    using var reader = command.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        var chat = reader.GetString(1);
+                        if (!names.ContainsKey(chat) || Open(reader.GetString(0), (byte[])reader[5]) is not { } plain) continue;
+                        var removed = reader.GetInt64(4) != 0;
+                        var messageId = removed ? Encoding.UTF8.GetString(plain) : ReadMessageId(plain);
+                        if (messageId is null) continue;
+                        if (!messages.TryGetValue(chat, out var list)) messages[chat] = list = [];
+                        list.Add(new(messageId, reader.GetInt64(2), reader.GetInt64(3), removed, plain));
+                    }
+                }
+                var chats = new List<HistoryFeedChat>();
+                using (var from = connection.CreateCommand())
+                {
+                    // A copy that reached the conversation's newest change still numbered at or before `since` holds everything before what follows: every
+                    // change since then has that number still, or a newer one in this read (a message keeps only its newest number).
+                    from.CommandText = "SELECT MAX(seq) FROM messages WHERE chat=$chat AND seq<=$since";
+                    var chatKey = from.Parameters.Add("$chat", SqliteType.Text);
+                    from.Parameters.AddWithValue("$since", since);
+                    foreach (var (key, (chatId, resetSeq)) in names)
+                    {
+                        var held = messages.GetValueOrDefault(key) ?? [];
+                        if (resetSeq > since && resetSeq <= through)
+                        {
+                            // Started over in this span (its first fill among them): only a copy made from the new start, at or past it, follows on, with
+                            // what changed after it. A copy from before it is read again when opened. Before this, a conversation the server first filled
+                            // after a client's revision came as a reset that no copy could take, even one synced from the fill a moment later.
+                            var after = held.Where(row => row.Seq > resetSeq).ToList();
+                            chats.Add(new(chatId, resetSeq, after.Count > 0 ? after.Max(row => row.Seq) : resetSeq, after));
+                            continue;
+                        }
+                        chatKey.Value = key;
+                        var before = from.ExecuteScalar() is long found ? found : 0L;
+                        if (resetSeq <= since) before = Math.Max(before, resetSeq);
+                        chats.Add(new(chatId, before, held.Count > 0 ? held.Max(row => row.Seq) : before, held));
+                    }
+                }
+                return new HistoryFeedRead(through, more, rows, chats);
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        finally { gate.Release(); }
+    }
+
+    // A row leaves the list with a mark that takes a number. False when it was not on it. The caller holds the gate, in a transaction.
+    private bool MarkRowGone(SqliteTransaction transaction, string chatId, ref long seq)
+    {
+        var rowId = RowKey(chatId);
+        using var command = connection!.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "UPDATE rows SET seq=$seq, removed=1, hash=NULL, payload=$payload WHERE id=$id AND removed=0";
+        command.Parameters.AddWithValue("$id", rowId);
+        command.Parameters.AddWithValue("$seq", seq + 1);
+        command.Parameters.AddWithValue("$payload", Seal(rowId, RowPayload(chatId, null)));
+        if (command.ExecuteNonQuery() == 0) return false;
+        seq++;
+        return true;
     }
 
     /// <summary>The file's size in bytes, for the host's diagnostics.</summary>
@@ -411,6 +655,15 @@ public sealed class HistoryDatabase(string path, IStateProtector protector) : ID
                     "CREATE INDEX IF NOT EXISTS messages_chat_ord ON messages(chat, ord);" +
                     "CREATE INDEX IF NOT EXISTS messages_chat_seq ON messages(chat, seq);" +
                     "CREATE INDEX IF NOT EXISTS chats_seq ON chats(seq);" +
+                    "PRAGMA user_version=1;";
+                command.ExecuteNonQuery();
+                version = 1;
+            }
+            if (version == 1)
+            {
+                command.CommandText = "CREATE TABLE IF NOT EXISTS rows(id TEXT PRIMARY KEY, seq INTEGER NOT NULL, removed INTEGER NOT NULL, hash BLOB, payload BLOB NOT NULL);" +
+                    "CREATE INDEX IF NOT EXISTS rows_seq ON rows(seq);" +
+                    "CREATE INDEX IF NOT EXISTS chats_reset ON chats(reset_seq);" +
                     $"PRAGMA user_version={Version};";
                 command.ExecuteNonQuery();
             }
@@ -452,6 +705,7 @@ public sealed class HistoryDatabase(string path, IStateProtector protector) : ID
         command.ExecuteNonQuery();
     }
 
+    private string RowKey(string chatId) => Convert.ToHexString(HMACSHA256.HashData(key.AsSpan(32, 32), Encoding.UTF8.GetBytes("row\n" + chatId)));
     private string ChatKey(string chatId) => Convert.ToHexString(HMACSHA256.HashData(key.AsSpan(32, 32), Encoding.UTF8.GetBytes("chat\n" + chatId)));
     private string MessageKey(string chatId, string messageId) =>
         Convert.ToHexString(HMACSHA256.HashData(key.AsSpan(32, 32), Encoding.UTF8.GetBytes("message\n" + chatId + "\n" + messageId)));
@@ -499,6 +753,11 @@ public sealed class HistoryDatabase(string path, IStateProtector protector) : ID
         if (plain.Length > 4 + length) state = plain[(4 + length)..];
         return Encoding.UTF8.GetString(plain, 4, length);
     }
+
+    // A list row: its id's length, its id, then its bytes (none for one that left the list).
+    private static byte[] RowPayload(string chatId, byte[]? bytes) => ChatPayload(chatId, bytes);
+
+    private static string? ReadRowPayload(byte[] plain, out byte[]? bytes) => ReadChatPayload(plain, out bytes);
 
     // A message's bytes are its JSON, whose "id" (or "Id") is read without binding the rest.
     private static string? ReadMessageId(byte[] plain)

@@ -136,13 +136,13 @@ internal sealed class NetworkHost : IAsyncDisposable
     }
 
     private NetworkHost(NetworkHostOptions options, Func<Admitted, Task> serve, string version, X509Certificate2 certificate, DeviceRegistry devices, Action? flush,
-        IServerAdmin? admin, IHostLogs? logs, ServerPage.Pushes? pushes)
+        IServerAdmin? admin, IHostLogs? logs, ServerPage.Pushes? pushes, IWholeHistory? history)
     {
         this.options = options; log = options.Log; this.serve = serve; this.version = version; this.certificate = certificate; this.devices = devices; this.flush = flush;
         pairing = new PairingCodes(options.Time, log, options.ShowCode);
         joins = new JoinRequests(options.Time, log, Path.Combine(options.KeysFolder ?? options.DataFolder, "join-requests-paused"));
         page = ServerPage.Create(options.PagePassword, options.KeysFolder ?? options.DataFolder, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
-            options.Tailnet, pushes);
+            options.Tailnet, pushes, history);
         devices.Revoked += EndDevice;
         // Real time, whatever clock the codes expire by: the check itself reads that clock (a test calls CheckPairing after moving it).
         pairingCheck = new Timer(_ => CheckPairing(), null, PairingCheckEvery, PairingCheckEvery);
@@ -232,7 +232,7 @@ internal sealed class NetworkHost : IAsyncDisposable
             var run = dispatcher.Start();
             _ = run.ContinueWith(_ => presence.Closed(dispatcher), TaskScheduler.Default);
             return run;
-        }, version, options, cancellationToken, served.Flush, services.Admin, services.Logs, devices, new ServerPage.Pushes(pushSwitch, pushes)).ConfigureAwait(false);
+        }, version, options, cancellationToken, served.Flush, services.Admin, services.Logs, devices, new ServerPage.Pushes(pushSwitch, pushes), services.WholeHistory).ConfigureAwait(false);
         host.DeviceRevoked += device => _ = pushes.RemoveAsync(device, "device_removed");
         host.Pushes = pushSwitch;
         // Another project's files: every phone's address was the old project's, so each is forgotten and signs up again at its next connection.
@@ -261,13 +261,13 @@ internal sealed class NetworkHost : IAsyncDisposable
     /// </summary>
     /// <param name="loaded">The paired devices, when the caller has read them already (the push registrations are judged by them); otherwise read here.</param>
     internal static async Task<NetworkHost> StartAsync(Func<Admitted, Task> serve, string version, NetworkHostOptions options, CancellationToken cancellationToken = default,
-        Action? flush = null, IServerAdmin? admin = null, IHostLogs? logs = null, DeviceRegistry? loaded = null, ServerPage.Pushes? pushes = null)
+        Action? flush = null, IServerAdmin? admin = null, IHostLogs? logs = null, DeviceRegistry? loaded = null, ServerPage.Pushes? pushes = null, IWholeHistory? history = null)
     {
         if (!IPAddress.TryParse(options.BindAddress, out var address)) throw new ArgumentException("The bind address is not an IP address.", nameof(options));
         Directory.CreateDirectory(options.DataFolder);
         var devices = loaded ?? await DeviceRegistry.LoadAsync(options.DataFolder, options.Protector, options.Time, options.Log, options.KeysFolder).ConfigureAwait(false);
         var certificate = ServerCertificate.LoadOrCreate(options.KeysFolder ?? options.DataFolder, options.HostNames, options.Log);
-        var host = new NetworkHost(options, serve, version, certificate, devices, flush, admin, logs, pushes);
+        var host = new NetworkHost(options, serve, version, certificate, devices, flush, admin, logs, pushes, history);
         try
         {
             await host.ListenAsync(address, cancellationToken).ConfigureAwait(false);

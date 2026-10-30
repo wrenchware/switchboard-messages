@@ -59,6 +59,7 @@ public sealed partial class ConsoleSessionViewModel : IConsoleAppHost
         {
             case "thread": await ThreadAsync(rest); return;
             case "diag": Diag(); return;
+            case "mirror": await MirrorAsync(rest); return;
             case "whoami": WhoAmI(); return;
             case "uptime": Uptime(); return;
             case "neofetch": Neofetch(); return;
@@ -104,6 +105,29 @@ public sealed partial class ConsoleSessionViewModel : IConsoleAppHost
         var problems = checks.Count(c => c.Level is ConsoleCheckLevel.Warn or ConsoleCheckLevel.Fail);
         Out(problems == 0 ? "No problems found." : $"{problems.ToString(CultureInfo.CurrentCulture)} to look at. Settings → Troubleshooting has Connection health and the logs (/logs).",
             problems == 0 ? ConsoleTone.Ok : ConsoleTone.Warn);
+    }
+
+    // The server's check of its copies against the services (SWITCHBOARD.md stage 9): its newest results, and with "now" a check started.
+    private async Task MirrorAsync(string rest)
+    {
+        var start = rest.Trim();
+        if (start.Length > 0 && !start.Equals("now", StringComparison.OrdinalIgnoreCase)) { Fail("Use /mirror or /mirror now."); return; }
+        ConsoleMirror? mirror;
+        try { mirror = await host.MirrorAsync(start.Length > 0); }
+        catch (Exception) { Fail("The server couldn't say just now."); return; }
+        if (mirror is null) { Out("No server keeps copies for this PC: /mirror is for a PC that uses a Messages Server.", ConsoleTone.Dim); return; }
+        if (start.Length > 0) Out("Checking now: each service takes about a second per conversation. /mirror again shows what it found.", ConsoleTone.Dim);
+        if (mirror.Services.Count == 0) { Out(mirror.Running ? "The first check is under way." : "Not checked yet: the server checks every half hour.", ConsoleTone.Dim); return; }
+        foreach (var service in mirror.Services)
+        {
+            var found = service.Differed == 0 ? "all matched"
+                : $"{service.Differed} differed: {service.Missing} missing, {service.Extra} gone, {service.Changed} changed, read again";
+            var tone = service.Differed == 0 ? ConsoleTone.Ok : ConsoleTone.Warn;
+            Emit(new ConsoleOutLine([new ConsoleSpan(service.Differed == 0 ? " ✓ " : " ! ", tone), new ConsoleSpan(ConsoleCells.Pad(service.Name, 18)),
+                new ConsoleSpan($"{service.Checked} checked · {found}" + (service.Skipped > 0 ? $" · {service.Skipped} not read" : "") + " · "
+                    + TimeZoneInfo.ConvertTime(service.At, clock.LocalTimeZone).ToString("HH:mm", CultureInfo.CurrentCulture), ConsoleTone.Dim)], false));
+        }
+        if (mirror.Running && start.Length == 0) Out("Another check is under way.", ConsoleTone.Dim);
     }
 
     private void WhoAmI()

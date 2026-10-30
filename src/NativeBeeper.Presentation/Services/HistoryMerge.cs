@@ -4,6 +4,12 @@ namespace NativeBeeper.Presentation.Services;
 
 public static class HistoryMerge
 {
+    /// <summary>
+    /// A conversation as this PC's copy of a server's whole history holds it, while that copy is known current (the app sets this when it is a server's
+    /// client; HistoryCopies.Snapshot): its messages oldest first, whether more lie before them, and the page position to read on from. Null otherwise.
+    /// </summary>
+    public static Func<string, ServerHistoryCopy?>? ServerCopy { get; set; }
+
     // Keeps history loaded earlier when a fresh newest page overlaps it, instead of shrinking the conversation
     // back to one page on every open or reconnect. The fresh page is authoritative for its own time window, so
     // messages deleted there disappear. Without overlap (a gap), or when the fresh page is the whole history,
@@ -13,6 +19,22 @@ public static class HistoryMerge
     {
         if (saved is not null && saved.Chat.Id == fresh.Chat.Id && MergedConversations.IsMerged(fresh.Chat.Id) && fresh.UnavailableSources is { Count: > 0 } missing)
             return KeepUnavailable(saved, fresh, missing);
+        // Following a server's whole history (SWITCHBOARD.md stage 9, B3): one copy. The rows are the PC's copy of the server's, as far back as it holds,
+        // never this screen's own older rows, which nothing corrects below the fresh window.
+        if (!MergedConversations.IsMerged(fresh.Chat.Id) && fresh.Messages.Count > 0 && ServerCopy?.Invoke(fresh.Chat.Id) is { Messages.Count: > 0 } whole)
+        {
+            var held = whole.Messages.Select(MessageIdentity.Key).ToHashSet();
+            // Only a copy that reaches back as far as what is drawn: one shorter (a page after a restart, one started again) would cut the conversation
+            // under someone scrolled back in it (review, 2026-10-30); the rows then join as before.
+            var reaches = !whole.MoreOlder || saved is null || saved.Chat.Id != fresh.Chat.Id || saved.Messages.Count == 0
+                || saved.Messages.Min(m => m.Timestamp) >= whole.Messages[0].Timestamp;
+            if (reaches && fresh.Messages.All(m => held.Contains(MessageIdentity.Key(m))))
+                return fresh with
+                {
+                    Messages = [.. whole.Messages.TakeLast(ConversationCache.MaxMessages)], Cursor = whole.Cursor, HasMore = whole.MoreOlder,
+                    AtLimit = false, PaginationStalled = false,
+                };
+        }
         if (saved is null || saved.Chat.Id != fresh.Chat.Id || saved.Messages.Count == 0 || fresh.Messages.Count == 0 || !freshHasMore) return fresh;
         var freshIds = fresh.Messages.Select(MessageIdentity.Key).ToHashSet();
         if (!Read(saved).Any(m => freshIds.Contains(MessageIdentity.Key(m)))) return fresh;
@@ -121,3 +143,6 @@ public static class HistoryMerge
         return rows is null ? fresh : fresh with { Messages = rows };
     }
 }
+
+/// <summary>A conversation as this PC's copy of a server's whole history holds it (<see cref="HistoryMerge.ServerCopy"/>).</summary>
+public sealed record ServerHistoryCopy(IReadOnlyList<ChatMessage> Messages, bool MoreOlder, string? Cursor);

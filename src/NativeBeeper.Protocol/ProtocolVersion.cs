@@ -90,10 +90,17 @@ namespace NativeBeeper.Protocol;
 /// <c>history</c> event, which carries the changed messages themselves. Additive: a client below 24 never calls them and is never sent the event (its place in the sequence
 /// counts as sent), and a host answers them as not supported to a connection that negotiated less. What every version gains is that the server answers its existing reads
 /// (<c>messages.page</c>, <c>history.held</c>, <c>messages.resolve</c>, the peeks) from the same copy where it holds the conversation, with page cursors of its own.</para>
+/// <para>25 (SWITCHBOARD.md stage 9) adds one ordered feed of the server's list rows and messages together (<c>history.feed</c>), a client's check of its copies against
+/// the server's (<c>history.verify</c>), the server's check of its own copy against the services (<c>history.mirror</c>), and the <c>row</c> event (a list row the
+/// server built again by itself). Additive: a client below 25 never calls them and is never sent the event, and a host answers them as not supported to a
+/// connection that negotiated less. What every version gains is a list row whose last message is the server's copy's, so
+/// the list never says what the thread does not hold.</para>
 /// </remarks>
 public static class ProtocolVersion
 {
-    public const int Current = 24;
+    public const int Current = 25;
+    /// <summary>The first version with the one ordered feed (<see cref="ProtocolMethods.HistoryFeed"/>) and the copy checks.</summary>
+    public const int Feed = 25;
     /// <summary>The first version with the server's whole history (<see cref="ProtocolMethods.HistorySync"/> and the <c>history</c> event).</summary>
     public const int WholeHistory = 24;
     /// <summary>23 adds chats.sync and persistent list revisions. Older clients keep chats.list; newer clients of older hosts do too. No existing wire changes.</summary>

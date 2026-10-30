@@ -196,8 +196,9 @@ internal sealed class ProtocolHost : IDisposable
         HostScheduledSends? scheduled = null;
         if (options.Scheduled is { } scheduledOptions && options.SharedState is { } rowsStore && identity is { } scheduledIdentity)
         {
+            // Through the whole history, so a scheduled send is read back into the copy as one sent now is.
             scheduled = new HostScheduledSends(rowsStore, async cancellationToken => (await scheduledIdentity.ReadAsync(cancellationToken).ConfigureAwait(false)).LocalKey,
-                messaging, messaging, messaging, scheduledIdentity, journal, scheduledOptions, log);
+                history is null ? messaging : history, history is null ? messaging : history, messaging, scheduledIdentity, journal, scheduledOptions, log);
             log("scheduled sends via=host");
         }
         var builder = new HostStateBuilder(new HostStatePorts(messaging, messaging, messaging, media, media, messaging, directory, directory, messengerAccount,
@@ -221,12 +222,16 @@ internal sealed class ProtocolHost : IDisposable
         // Made below, once the services exist; a sign-out tells it which account went (slice 8).
         HostSavedPhotos? savedPhotos = null;
         // With a whole history, the reads it can answer (pages, held messages, resolves, peeks, windows) and the changes it reads back go through it.
+        // Files and a first message go around the history's own ports, so they are read back into it (stage 9).
+        var readBack = history is null ? null : new HistoryReadBack(media, media, directory, history);
+        // chats.sync lists the rows as the history builds them, their last message from its copy (stage 9), as chats.list does.
         var services = new ProtocolServices(Backend: unavailable?.Backend ?? google, Chats: history is null ? messaging : history,
-            ConversationSync: new ConversationSync(messaging, options.ConversationSyncStore, log), Sender: history is null ? messaging : history,
+            ConversationSync: new ConversationSync(history is null ? messaging : history, options.ConversationSyncStore, log), Sender: history is null ? messaging : history,
             Peek: history is null ? messaging : history, Actions: history is null ? messaging : history, History: history is null ? messaging : history, WholeHistory: history,
             Contacts: directory, FrequentContacts: directory, Groups: directory, Search: google, ReadState: new PrivateReadingHostReadState(messaging), Settings: messaging,
-            Attachments: media, Snoozes: options.Snoozes, Mutations: history is null ? messaging : history, Deletion: messaging, GroupManagement: directory, FirstMessage: directory,
-            Events: eventLog, Media: media, AttachmentBatches: media, Uploads: uploads,
+            Attachments: readBack ?? (IAttachmentBackend)media, Snoozes: options.Snoozes, Mutations: history is null ? messaging : history, Deletion: messaging,
+            GroupManagement: directory, FirstMessage: readBack ?? (IFirstMessageStarter)directory,
+            Events: eventLog, Media: media, AttachmentBatches: readBack ?? (IAttachmentBatchBackend)media, Uploads: uploads,
             // The account move's gate stands in front of the two ports a PC's accounts move through: nothing signs them in while they are staged or have moved away.
             MessengerAccount: options.AccountGate is { } gate ? new GatedMessengerAccount(messengerAccount, gate) : messengerAccount,
             InstagramAccount: options.AccountGate is { } instagramGate ? new GatedInstagramAccount(instagramAccount, instagramGate) : instagramAccount,

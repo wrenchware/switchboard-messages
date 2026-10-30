@@ -125,6 +125,12 @@ public static class EventKinds
     /// it missed and one that was handed a resync reads them with <c>history.changes</c>. A connection below 24 is never sent one.
     /// </summary>
     public const string History = "history";
+    /// <summary>
+    /// One conversation's list row as the server keeps it now (<c>HistoryRowChange</c>, protocol 25, SWITCHBOARD.md stage 9): built again on its own when its copy
+    /// changed (its last message) or an event named it, so a connected client's list follows without asking. A whole read of the list makes none: a client
+    /// reads those changes with <c>history.feed</c>. A connection below 25 is never sent one.
+    /// </summary>
+    public const string Row = "row";
 }
 
 /// <summary>

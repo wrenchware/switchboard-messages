@@ -38,6 +38,73 @@ public sealed class HistoryCopies
         client.FeedResynced += (_, _) => Unsettle();
         client.Connected += (_, _) => Unsettle();
         client.HistoryUnreadable += (_, _) => Unsettle();
+        checker = new Timer(_ => _ = CheckSoonAsync(), null, CheckFirst, CheckEvery);
+    }
+
+    // ---- The copies checked against the server's (SWITCHBOARD.md stage 9, B4) ----
+
+    private readonly Timer checker;
+    private int checking;
+
+    /// <summary>When the copies are first compared with the server's after a start, and how often after that.</summary>
+    public static readonly TimeSpan CheckFirst = TimeSpan.FromMinutes(2), CheckEvery = TimeSpan.FromMinutes(30);
+
+    private async Task CheckSoonAsync()
+    {
+        if (Interlocked.Exchange(ref checking, 1) == 1) return;
+        try { await CheckAsync().ConfigureAwait(false); }
+        catch (Exception) { }
+        finally { Volatile.Write(ref checking, 0); }
+    }
+
+    /// <summary>
+    /// Compares every copy known current with the server's by fingerprint (<c>history.verify</c>, which reads no service) and starts again any that differs:
+    /// a copy that drifted from the server's is how a thread shows a message twice, or misses one, while the phone's is right. Logs counts only. Null when
+    /// nothing could be compared (no copy current, a server below 25, no feed).
+    /// </summary>
+    public async Task<(int Same, int Differ, int Behind, int Unknown)?> CheckAsync(CancellationToken cancellationToken = default)
+    {
+        if (!Enabled || client.Version is not >= ProtocolVersion.Feed || !client.HasEventFeed) return null;
+        List<HistoryCopyDigest> asked;
+        lock (gate)
+        {
+            asked = copies.Where(pair => pair.Value.Settled && pair.Value.Messages.Count > 0)
+                .OrderByDescending(pair => pair.Value.Used).Take(WholeHistoryLimits.MaxVerify)
+                .Select(pair => new HistoryCopyDigest(pair.Key, pair.Value.Revision, pair.Value.Messages[0].Timestamp, pair.Value.Messages[0].SortKey ?? "",
+                    pair.Value.Messages[0].Id, pair.Value.Messages.Count, HistoryDigest.Of(pair.Value.Messages))).ToList();
+        }
+        if (asked.Count == 0) return null;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        HistoryVerifyResult result;
+        try { result = await client.CallAsync<HistoryVerifyParams, HistoryVerifyResult>(ProtocolMethods.HistoryVerify, new(asked), cancellationToken).ConfigureAwait(false); }
+        catch (Exception failure) when (failure is not OperationCanceledException || !cancellationToken.IsCancellationRequested) { return null; }
+        int same = 0, differ = 0, behind = 0, unknown = 0;
+        lock (gate)
+        {
+            var sent = asked.ToDictionary(copy => copy.ChatId, StringComparer.Ordinal);
+            foreach (var check in result.Chats)
+            {
+                switch (check.Outcome)
+                {
+                    case HistoryCopyOutcomes.Same: same++; break;
+                    case HistoryCopyOutcomes.Behind: behind++; break;
+                    case HistoryCopyOutcomes.Differ:
+                        differ++;
+                        // Starts again from the server's newest at its next read, unless it moved on since it was compared.
+                        if (copies.TryGetValue(check.ChatId, out var copy) && sent.TryGetValue(check.ChatId, out var was) && copy.Revision == was.Revision)
+                        {
+                            copy.Messages = [];
+                            copy.Revision = "";
+                            copy.Current = false;
+                        }
+                        break;
+                    default: unknown++; break;
+                }
+            }
+        }
+        try { log?.Invoke($"history check chats={asked.Count} same={same} differ={differ} behind={behind} unknown={unknown} ms={clock.ElapsedMilliseconds}"); }
+        catch (Exception) { }
+        return (same, differ, behind, unknown);
     }
 
     // The server waits this long at most for the events under way before it answers a sync (ConversationHistory.SettleWait, 3 s); an answer slower than this
@@ -169,6 +236,20 @@ public sealed class HistoryCopies
                     return copy.Messages[i];
                 }
             return null;
+        }
+    }
+
+    /// <summary>
+    /// A copy known current as a whole, for the conversation view to draw from it alone (stage 9, B3): its messages oldest first, whether more lie before them,
+    /// and the page position to read on from. Null when no copy is current.
+    /// </summary>
+    public (IReadOnlyList<ChatMessage> Messages, bool MoreOlder, string? Cursor)? Snapshot(string chatId)
+    {
+        if (!Enabled) return null;
+        lock (gate)
+        {
+            if (!copies.TryGetValue(chatId, out var copy) || !Answers(copy) || copy.Messages.Count == 0) return null;
+            return (copy.Messages.ToArray(), copy.MoreOlder, copy.MoreOlder ? HistoryPosition.Cursor(copy.Messages[0]) : null);
         }
     }
 

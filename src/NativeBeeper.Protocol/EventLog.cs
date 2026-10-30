@@ -9,9 +9,9 @@ namespace NativeBeeper.Protocol;
 /// A <see cref="History"/> item is one change to the server's whole copy of a conversation (stage 8).
 /// </summary>
 public sealed record EventItem(long Seq, RealtimeEvent? Event, HostState? State = null, AccountSignal? Signal = null, CaughtUpNotice? CaughtUp = null,
-    SharedChange? Shared = null, HistoryChange? History = null)
+    SharedChange? Shared = null, HistoryChange? History = null, HistoryRowChange? Row = null)
 {
-    public bool IsResync => Event is null && State is null && Signal is null && CaughtUp is null && Shared is null && History is null;
+    public bool IsResync => Event is null && State is null && Signal is null && CaughtUp is null && Shared is null && History is null && Row is null;
 }
 
 /// <summary>
@@ -131,6 +131,9 @@ public sealed class EventLog : IDisposable
     /// reader that resumes is given it too. A reader that fell behind and was handed a resync reads what it missed with <c>history.changes</c>.
     /// </summary>
     public long AppendHistory(HistoryChange change) => Record(position => new EventItem(position, null, History: change), null);
+
+    /// <summary>Records a conversation's list row as the server now keeps it (stage 9), for connections of 25 and later.</summary>
+    public long AppendRow(HistoryRowChange change) => Record(position => new EventItem(position, null, Row: change), null);
 
     /// <summary>
     /// Starts running the source feed with no reader yet: a host that keeps something of its own from the events (the whole history) needs them whether or not

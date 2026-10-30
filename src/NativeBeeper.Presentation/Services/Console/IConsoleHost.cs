@@ -37,6 +37,10 @@ public sealed record ConsoleStorageItem(string Name, long Bytes, long Reclaimabl
 /// <param name="State">sending, pending, unknown, held, scheduled or not sent.</param>
 public sealed record ConsoleQueueItem(string State, string ChatId, string Text, DateTimeOffset Created, DateTimeOffset? Due = null);
 
+/// <summary>What /mirror says: the server's newest check of its copies against each service, and whether one is under way.</summary>
+public sealed record ConsoleMirror(bool Running, IReadOnlyList<ConsoleMirrorService> Services);
+public sealed record ConsoleMirrorService(string Name, DateTimeOffset At, int Checked, int Differed, int Missing, int Extra, int Changed, int Skipped);
+
 public enum ConsoleCheckLevel { Ok, Info, Warn, Fail }
 /// <summary>One line of /diag: a check the host can answer from what it already holds.</summary>
 public sealed record ConsoleCheck(ConsoleCheckLevel Level, string Name, string Detail);
@@ -102,6 +106,11 @@ public interface IConsoleHost
     /// <summary>Lines of a log after <paramref name="from"/> (a byte position from an earlier read; 0 for the tail).</summary>
     Task<ConsoleLogRead> ReadLogAsync(string source, long from, CancellationToken cancellationToken = default) =>
         Task.FromResult(new ConsoleLogRead([], 0, false));
+    /// <summary>
+    /// The server's check of its copies against the services (/mirror), and with <paramref name="start"/> one started now: the server then reads its most
+    /// recently active conversations from each service. Null where no server keeps a copy (this PC runs the services itself).
+    /// </summary>
+    Task<ConsoleMirror?> MirrorAsync(bool start, CancellationToken cancellationToken = default) => Task.FromResult<ConsoleMirror?>(null);
     /// <summary>A conversation's history as this PC keeps it (in memory first, then the saved copy); never a provider read.</summary>
     Task<HistorySnapshot?> SavedHistoryAsync(string chatId) => Task.FromResult<HistorySnapshot?>(null);
     /// <summary>The conversation open in the main window, by the id the list shows it under; null when none.</summary>

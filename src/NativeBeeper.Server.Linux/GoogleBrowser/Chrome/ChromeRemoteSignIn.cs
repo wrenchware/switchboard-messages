@@ -63,6 +63,8 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
         public readonly SemaphoreSlim InputLock = new(1, 1);
         // Cancelled when the display is about to be let go, so input in flight stops where it is.
         public readonly CancellationTokenSource Aborted = new();
+        // The person said they are finished (protocol 27's Done): what a Messenger or Instagram sign-in waits for. A Google one ends by itself and never looks.
+        public readonly TaskCompletionSource Done = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Action Touch = () => { };
         public int MouseSeen, MouseApplied;
     }
@@ -121,6 +123,90 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
         public bool BrowserOutOfDate => owner.BrowserOutOfDate;
     }
 
+    /// <summary>
+    /// The same window, display, input and one-at-a-time for Messenger and Instagram (protocol 27, SWITCHBOARD.md 10.5), each on a throwaway Chrome profile under <paramref name="profilesRoot"/>, like the PC's
+    /// InPrivate window. See <see cref="RunMetaAsync"/>.
+    /// </summary>
+    public IRemoteCookieSignInHost ForMeta(string profilesRoot) => new MetaHost(this, profilesRoot);
+
+    private sealed class MetaHost(ChromeRemoteSignIn owner, string profilesRoot) : IRemoteCookieSignInHost
+    {
+        public bool Offers(string service) => MetaSignInTarget.For(service) is not null;
+
+        public async Task<Dictionary<string, string>> SignInAsync(string service, RemoteSignInRequest request, IRemoteSignInOutput output, CancellationToken cancellationToken)
+        {
+            var target = MetaSignInTarget.For(service) ?? throw new NotSupportedException();
+            Dictionary<string, string>? cookies = null;
+            await owner.EnterAsync(request, RemoteSignInFinish.Line(service, "refused", "busy"),
+                async session => cookies = await owner.RunMetaAsync(session, target, profilesRoot, output, cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+            return cookies!;
+        }
+
+        public Task InputAsync(object inputOwner, IReadOnlyList<RemoteSignInInput> events, CancellationToken cancellationToken) => owner.InputAsync(inputOwner, events, cancellationToken);
+    }
+
+    /// <summary>
+    /// A Messenger or Instagram sign-in in the server's Chrome (SWITCHBOARD.md 10.5): Chrome (closed first, off the Messages profile) is started on a NEW throwaway profile at the service's login page; the
+    /// person signs in by hand and chooses Done; Chrome is then closed gently, which is when it writes its cookie file whole (it writes late otherwise); the cookies the PC's own window would have kept are
+    /// read from that file (<see cref="MetaSignInTarget"/>, the same rules), and refused with <c>missing_cookies</c> unless the required ones are all there. Whatever happens, the profile is deleted and
+    /// Chrome goes back to the Messages profile, as after a Voice sign-in. Nothing is retried: a refusal or a failure ends the sign-in, and the person starts it again.
+    /// <para>
+    /// Nothing is ever put into the page and nothing about the browser is disguised: the profile is new and empty (its preferences turn password saving off and keep session cookies on disk, as a
+    /// browser that restores its last session does), and Instagram's inbox is kept out by the browser's own policy file, not by anything run in the page.
+    /// </para>
+    /// </summary>
+    private async Task<Dictionary<string, string>> RunMetaAsync(Session session, MetaSignInTarget target, string profilesRoot, IRemoteSignInOutput output, CancellationToken cancellationToken)
+    {
+        var service = target.Service;
+        using var run = new Run(this, session, cancellationToken);
+        log(RemoteSignInFinish.Line(service, "started", "none"));
+        IDisposable hold;
+        try { hold = await chrome.HoldAsync(GateWait, cancellationToken).ConfigureAwait(false); }
+        catch (InvalidOperationException) { log(RemoteSignInFinish.Line(service, "refused", "busy")); throw; }
+        using var _hold = hold;
+
+        var profile = ThrowawayChromeProfile.Create(profilesRoot);
+        var browserReason = "browser";
+        try
+        {
+            ThrowawayChromeProfile.PreparePreferences(profile.Path);
+            // A new profile, nothing copied: Chrome is closed first, so the display and the profile folder are the new ones alone.
+            await InteractAsync(session, run, output, cancellationToken, profile.Path, target.LoginUrl, token => session.Done.Task.WaitAsync(token), () => chrome.StopAsync(),
+                failure => browserReason = "browser_" + failure.GetType().Name).ConfigureAwait(false);
+
+            // The person chose Done. Chrome closed gently, so the cookie file on disk holds everything it had; only then is it read.
+            await chrome.StopAsync().ConfigureAwait(false);
+            var read = await cookies.ReadAsync(profile.Path, target.Cookies, CancellationToken.None).ConfigureAwait(false);
+            var found = read?.Cookies ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            if (!target.Required.All(found.ContainsKey))
+            {
+                found.Clear();
+                run.Outcome = "missing";
+                throw new InvalidOperationException("missing_cookies");
+            }
+            run.Outcome = "ok";
+            log(RemoteSignInFinish.Line(service, "signed_in", "none"));
+            // The browser is finished and closed; the window goes, and the server connects the account.
+            output.SignedIn();
+            return found;
+        }
+        finally
+        {
+            switch (run.Outcome)
+            {
+                case "cancelled": log(RemoteSignInFinish.Line(service, "cancelled", "client")); break;
+                case "timeout": log(RemoteSignInFinish.Line(service, "timeout", "limit")); break;
+                case "missing": log(RemoteSignInFinish.Line(service, "refused", "missing_cookies")); break;
+                case "ok": break;
+                default: log(RemoteSignInFinish.Line(service, "failed", browserReason)); break;
+            }
+            // The Chrome that wrote the profile goes first, then the profile with everything it held. Then Chrome is where it was: on the Messages profile, if one is kept.
+            await chrome.StopAsync().ConfigureAwait(false);
+            await profile.DeleteAsync(log).ConfigureAwait(false);
+            await MessagesChrome.ResumeAsync(chrome, log).ConfigureAwait(false);
+        }
+    }
+
     private async Task EnterAsync(RemoteSignInRequest request, string busyLine, Func<Session, Task> run)
     {
         var session = new Session(request.Owner);
@@ -141,6 +227,14 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
         // Another connection's sign-in, or none: refused with a word, and nothing in the events is looked at.
         if (session is null || !ReferenceEquals(session.Owner, owner)) throw new InvalidOperationException("no_sign_in");
         session.Touch();
+        // Done comes after whatever the person did before it in the same batch, which is applied first.
+        var done = events.Any(item => item.Kind == RemoteSignIn.DoneKind);
+        try { await ApplyAsync(session, events, cancellationToken).ConfigureAwait(false); }
+        finally { if (done) session.Done.TrySetResult(); }
+    }
+
+    private async Task ApplyAsync(Session session, IReadOnlyList<RemoteSignInInput> events, CancellationToken cancellationToken)
+    {
         if (session.Display is null) return;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, session.Aborted.Token);
         try { await session.InputLock.WaitAsync(linked.Token).ConfigureAwait(false); }
@@ -151,7 +245,7 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
             if (session.Display is not { } display || session.Runner is not { } runner) return;
             foreach (var item in events)
             {
-                if (item.Kind == RemoteSignIn.Resize) continue;
+                if (item.Kind is RemoteSignIn.Resize or RemoteSignIn.DoneKind) continue;
                 var actions = XInputTranslator.Translate(item, display.Width, display.Height);
                 if (item.Kind == RemoteSignIn.Mouse)
                 {
@@ -300,10 +394,21 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
         }
     }
 
-    // The person's part, the same for both services: Chrome on a profile at a page, its display shown and driven, until the cookie store holds a NEW complete sign-in (and `ready` says it is the one wanted).
-    // Leaves the cookies in run.Cookies and what happened to the run in run.Outcome (timeout, cancelled); the browser's display and input are let go before this returns, however it ends.
-    private async Task InteractAsync(Session session, Run run, IRemoteSignInOutput output, CancellationToken cancellationToken, string workingPath, string page, ChromiumRenewalTarget target,
-        Func<ChromeCookieRead, bool> ready, Func<Task>? prepare, string logPrefix)
+    // Google's part: until the cookie store holds a NEW complete sign-in (and `ready` says it is the one wanted), which it leaves in run.Cookies.
+    private Task InteractAsync(Session session, Run run, IRemoteSignInOutput output, CancellationToken cancellationToken, string workingPath, string page, ChromiumRenewalTarget target,
+        Func<ChromeCookieRead, bool> ready, Func<Task>? prepare, string logPrefix) =>
+        InteractAsync(session, run, output, cancellationToken, workingPath, page, async token =>
+        {
+            var finished = await WaitForSignInAsync(workingPath, target, ready, token).ConfigureAwait(false);
+            run.Lifetime = finished.SidtsLifetime;
+            run.Cookies = new Dictionary<string, string>(finished.Cookies, StringComparer.Ordinal);
+            finished.Cookies.Clear();
+        }, prepare, failure => log($"{logPrefix} failed type={failure.GetType().Name}"));
+
+    // The person's part, the same for every service: Chrome on a profile at a page, its display shown and driven, until `wait` ends (Google's: a new sign-in in the cookie store; Messenger's and
+    // Instagram's: the person's Done). What happened to the run is left in run.Outcome (timeout, cancelled); the browser's display and input are let go before this returns, however it ends.
+    private async Task InteractAsync(Session session, Run run, IRemoteSignInOutput output, CancellationToken cancellationToken, string workingPath, string page,
+        Func<CancellationToken, Task> wait, Func<Task>? prepare, Action<Exception> browserFailed)
     {
         var limit = run.Limit;
         Task? screenTask = null;
@@ -325,7 +430,7 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
             var screen = run.Screen;
             screenTask = Task.Run(() => screen.RunAsync(screenStop.Token));
             using var waitStop = CancellationTokenSource.CreateLinkedTokenSource(limit.Token);
-            var waiting = WaitForSignInAsync(workingPath, target, ready, waitStop.Token);
+            var waiting = wait(waitStop.Token);
             var first = await Task.WhenAny(waiting, screenTask).ConfigureAwait(false);
             if (first != waiting && !limit.IsCancellationRequested)
             {
@@ -334,10 +439,7 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
                 try { await waiting.ConfigureAwait(false); } catch (Exception) { }
                 throw new IOException("x_unavailable");
             }
-            var finished = await waiting.ConfigureAwait(false);
-            run.Lifetime = finished.SidtsLifetime;
-            run.Cookies = new Dictionary<string, string>(finished.Cookies, StringComparer.Ordinal);
-            finished.Cookies.Clear();
+            await waiting.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (run.TimedOut && !cancellationToken.IsCancellationRequested)
         {
@@ -352,7 +454,7 @@ internal sealed class ChromeRemoteSignIn(PersistentChrome chrome, IChromeCookieS
         // The browser did not come up, or its display went away. The type only.
         catch (Exception failure) when (failure is not InvalidOperationException)
         {
-            log($"{logPrefix} failed type={failure.GetType().Name}");
+            browserFailed(failure);
             throw new InvalidOperationException("sign_in_browser");
         }
         finally

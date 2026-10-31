@@ -17,7 +17,8 @@ import (
 // same two): DeleteThreadTask with remove type 1 archives, and a task of its own, label 242 on the unarchive_thread
 // queue, brings one back. Remove type 2, which this helper sent to bring one back until 2026-10-17, is filed under the
 // archive in that client too. That fits what was seen on 2026-10-17: Messenger acknowledged an unarchive sent as type
-// 2 and kept the conversation archived. Neither request has been confirmed live yet; the folder-move log lines say.
+// 2 and kept the conversation archived. The archive was seen working on 2026-10-30 (an encrypted chat, group 95):
+// Messenger filed it under Archived chats and said nothing about it to this device. The unarchive has not been seen.
 const archiveRemoveType int64 = 1
 
 const unarchiveThreadLabel = "242"
@@ -33,8 +34,8 @@ func (t *unarchiveThreadTask) GetLabel() string      { return unarchiveThreadLab
 func (t *unarchiveThreadTask) Create() (any, string) { return t, "unarchive_thread" }
 
 // How long a move waits for Messenger to say the conversation is in its new folder. Messenger answers this task family
-// with a bare acknowledgement whether or not it did anything (PROVIDERS.md), so only its own statement of the folder
-// counts. A statement arriving after this is still applied, as any other folder change from Messenger is.
+// with a bare acknowledgement whether or not it did anything (PROVIDERS.md), so for a move to the inbox only its own
+// statement of the folder counts. A statement arriving after this is still applied, as any other folder change is.
 var folderEchoWait = 3 * time.Second
 
 // An encrypted conversation's mailbox tasks go to its own sync group, as marking read and deleting do.
@@ -111,13 +112,20 @@ func (a *adapter) updateChat(ctx context.Context, r request) (any, string) {
 		logRows("folder move reply", tbl, a.applyTable(ctx, tbl))
 	}
 	// Until 2026-10-17 the acknowledgement alone moved this copy, and saved it, so the phone and this PC showed a
-	// conversation back in the inbox that Messenger still had archived. Only Messenger saying so moves it now; without
-	// that the copy stays as Messenger last described it and the move is reported unconfirmed, never sent again.
+	// conversation back in the inbox that Messenger still had archived. A move back to the inbox still waits for
+	// Messenger to say so; without that the copy stays as Messenger last described it and the move is reported
+	// unconfirmed, never sent again. An archive Messenger acknowledged is applied as its own statement would be: it
+	// archives and never says so to the device that asked (2026-10-30), so waiting bounced every archive back.
 	if !waitForFolderMove(ctx, confirmed, folderEchoWait) {
-		logf("folder move chat=%s to=%s outcome=unconfirmed after=%dms", tag(key), to, time.Since(started).Milliseconds())
-		return nil, "update_unconfirmed"
+		if !*p.Archived || ctx.Err() != nil {
+			logf("folder move chat=%s to=%s outcome=unconfirmed after=%dms", tag(key), to, time.Since(started).Milliseconds())
+			return nil, "update_unconfirmed"
+		}
+		a.applyTable(ctx, &table.LSTable{LSMoveThreadToArchivedFolder: []*table.LSMoveThreadToArchivedFolder{{ThreadKey: key}}})
+		logf("folder move chat=%s to=%s outcome=acknowledged after=%dms", tag(key), to, time.Since(started).Milliseconds())
+	} else {
+		logf("folder move chat=%s to=%s outcome=confirmed after=%dms", tag(key), to, time.Since(started).Milliseconds())
 	}
-	logf("folder move chat=%s to=%s outcome=confirmed after=%dms", tag(key), to, time.Since(started).Milliseconds())
 	found, ok := a.chats.chatByKey(key)
 	if !ok {
 		return nil, "chat_unavailable"

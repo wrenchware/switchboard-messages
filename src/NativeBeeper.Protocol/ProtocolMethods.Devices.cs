@@ -24,6 +24,11 @@ public static partial class ProtocolMethods
     public const string DevicesApproveJoin = "devices.approveJoin";
     /// <summary>Turns a request to join away: the asking device is told so. The owner only.</summary>
     public const string DevicesDenyJoin = "devices.denyJoin";
+    /// <summary>
+    /// A new pairing code (replacing any open one) as the join link a phone scans and the line a PC pastes (protocol <see cref="ProtocolVersion.JoinLinks"/>, SWITCHBOARD.md
+    /// 10.4): the server's Tailscale machine name and account, the address given or the server's own, its fingerprint and the code. The owner only.
+    /// </summary>
+    public const string DevicesJoinLink = "devices.joinLink";
 
     private static Entry[] DeviceEntries() =>
     [
@@ -34,6 +39,7 @@ public static partial class ProtocolMethods
         new(DevicesJoinRequests, "IPairedDevices.JoinRequestsAsync", null, typeof(IReadOnlyList<JoinRequest>)),
         new(DevicesApproveJoin, "IPairedDevices.ApproveJoinAsync", typeof(JoinIdParams), typeof(JoinApproved)),
         new(DevicesDenyJoin, "IPairedDevices.DenyJoinAsync", typeof(JoinIdParams), typeof(JoinDenied)),
+        new(DevicesJoinLink, "IPairedDevices.JoinLinkAsync", typeof(JoinLinkParams), typeof(JoinLinkIssued)),
     ];
 }
 
@@ -67,6 +73,15 @@ public sealed record DeviceRevoked(bool Revoked);
 /// <summary>A new pairing code, as the server's log also prints it, good once for <paramref name="ExpiresSeconds"/>.</summary>
 public sealed record PairingCodeIssued(string Code, int ExpiresSeconds);
 
+/// <summary>What <c>devices.joinLink</c> is asked with: the address the asking device reaches the server by on the home network, when it knows one (its own saved address).</summary>
+public sealed record JoinLinkParams(string? Address = null);
+
+/// <summary>
+/// A new pairing code as a join link (<see cref="JoinLink.Build"/>) for a phone's QR code and a line (<see cref="JoinLink.Line"/>) for a PC, good once for
+/// <paramref name="ExpiresSeconds"/>. <paramref name="Line"/> is null when the server knows no home address to put in it.
+/// </summary>
+public sealed record JoinLinkIssued(string Link, string? Line, string Code, int ExpiresSeconds, string Fingerprint, string? Address = null, string? TailnetName = null);
+
 /// <summary>The device to rename and its new name, which the host cleans as it cleans a name given at pairing (trimmed, no control characters, at most <see cref="NetworkPairing.MaxDeviceName"/>).</summary>
 public sealed record DeviceRenameParams(string Id, string Name);
 
@@ -84,4 +99,6 @@ public interface IPairedDevices
     Task<IReadOnlyList<JoinRequest>> JoinRequestsAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     Task<JoinApproved> ApproveJoinAsync(string id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     Task<JoinDenied> DenyJoinAsync(string id, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+    // Only the network host makes join links (protocol 27).
+    Task<JoinLinkIssued> JoinLinkAsync(string? address, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 }

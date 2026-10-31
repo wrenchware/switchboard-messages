@@ -94,6 +94,35 @@ public sealed class MessengerAccountProxy(ProtocolClient client, HostStateCache 
         (await AccountWire.MutateAsync<AccountOpParams, FailureCode>(client, ProtocolMethods.AccountsMessengerEnableEncryptedAfterSignIn, new(AccountWire.OperationId())).ConfigureAwait(false)).Code;
 
     public Task SignOutAsync() => AccountWire.MutateAsync(client, ProtocolMethods.AccountsMessengerSignOut, new AccountOpParams(AccountWire.OperationId()));
+
+    /// <summary>
+    /// Whether this server signs Messenger in in its own Chrome (protocol 27): it says so in its state, and this connection speaks a version that has the method. When false the sign-in is made in this
+    /// PC's own window and its cookies handed up with <see cref="ConnectAsync"/>, as before (a Windows server, an older Linux server, one without its own Chrome).
+    /// </summary>
+    public bool CanSignInOnServer => cache.Limits.RemoteMessengerSignIn && client.Version is >= ProtocolVersion.ServerSignIn;
+
+    /// <summary>
+    /// A Messenger sign-in made in the server's browser: <paramref name="view"/> gets its pictures, then <see cref="RemoteSignIn.SignedInKind"/> once the person chose Done and the server has read the
+    /// sign-in; <paramref name="progress"/> gets <see cref="RemoteSignIn.ConnectingProgress"/> and <see cref="RemoteSignIn.EncryptingProgress"/>. The person's input and Done go by
+    /// <see cref="SendSignInInputAsync"/>. No cookie crosses: the server reads them, connects and turns encrypted conversations on once.
+    /// </summary>
+    public Task<RemoteSignInResult> SignInOnServerAsync(IProgress<string> progress, Action<SignInViewEvent> view, CancellationToken cancellationToken, int width = 0, int height = 0) =>
+        RemoteSignInWire.StartAsync(client, RemoteSignInServices.Messenger, progress, view, cancellationToken, width, height);
+
+    /// <summary>What the person did in the window, in order, Done included. Not a mutation, and refused unless this connection has a sign-in under way.</summary>
+    public Task SendSignInInputAsync(IReadOnlyList<RemoteSignInInput> events, CancellationToken cancellationToken = default) => RemoteSignInWire.InputAsync(client, events, cancellationToken);
+}
+
+/// <summary>The calls of a sign-in in the server's browser for a service that ends with Done (protocol 27), shared by Messenger's and Instagram's proxies.</summary>
+internal static class RemoteSignInWire
+{
+    public static Task<RemoteSignInResult> StartAsync(ProtocolClient client, string service, IProgress<string> progress, Action<SignInViewEvent> view, CancellationToken cancellationToken,
+        int width, int height) =>
+        AccountWire.MutateAsync<ServerSignInParams, RemoteSignInResult>(client, ProtocolMethods.ServerSignInMethod,
+            new(AccountWire.OperationId(), service, false, width, height), cancellationToken, progress, view);
+
+    public static Task InputAsync(ProtocolClient client, IReadOnlyList<RemoteSignInInput> events, CancellationToken cancellationToken) =>
+        client.CallAsync<RemoteSignInInputParams, Done>(ProtocolMethods.RemoteSignInInputMethod, new(events), cancellationToken);
 }
 
 /// <summary>Instagram's account over the wire.</summary>
@@ -146,6 +175,18 @@ public sealed class InstagramAccountProxy : IInstagramAccount
 
     // Per message, and about what the host holds in memory: read from a copy of the host's answer (see the header).
     public bool AnswersFromMemory(string chatId, string messageId) => held.Get((chatId, messageId));
+
+    /// <summary>As <see cref="MessengerAccountProxy.CanSignInOnServer"/>, for Instagram.</summary>
+    public bool CanSignInOnServer => cache.Limits.RemoteInstagramSignIn && client.Version is >= ProtocolVersion.ServerSignIn;
+
+    /// <summary>
+    /// An Instagram sign-in made in the server's browser, as <see cref="MessengerAccountProxy.SignInOnServerAsync"/>: the server reads the cookies when the person chooses Done and connects. Instagram's
+    /// inbox pages stay blocked in that browser, as in this PC's own window.
+    /// </summary>
+    public Task<RemoteSignInResult> SignInOnServerAsync(IProgress<string> progress, Action<SignInViewEvent> view, CancellationToken cancellationToken, int width = 0, int height = 0) =>
+        RemoteSignInWire.StartAsync(client, RemoteSignInServices.Instagram, progress, view, cancellationToken, width, height);
+
+    public Task SendSignInInputAsync(IReadOnlyList<RemoteSignInInput> events, CancellationToken cancellationToken = default) => RemoteSignInWire.InputAsync(client, events, cancellationToken);
 }
 
 /// <summary>Google Messages' account over the wire.</summary>

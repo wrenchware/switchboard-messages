@@ -44,13 +44,12 @@
     <ProjectReference Include="../NativeBeeper.Host/NativeBeeper.Host.csproj" />
     <ProjectReference Include="../NativeBeeper.Windows/NativeBeeper.Windows.csproj" />
     <ProjectReference Include="../NativeBeeper.Windows.Browser/NativeBeeper.Windows.Browser.csproj" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
 
   </ItemGroup>
   <ItemGroup>
     <Compile Remove="Services/WindowsTokenStore.cs" />
     <!-- One sign-in surface, not two: these are the files the stage-2 diagnostic already proved against the live account. -->
-    <Compile Include="../../experiments/Instagram/NativeBeeper.Instagram.Spike/InstagramSignInRules.cs" Link="Services/Instagram/InstagramSignInRules.cs" />
     <Compile Include="../../experiments/Instagram/NativeBeeper.Instagram.Spike/InstagramSignInWindow.cs" Link="Services/Instagram/InstagramSignInWindow.cs" />
     <Content Include="../../experiments/GoogleMessages/helper/bin/gmessages-helper.exe" Link="gmessages-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/GoogleMessages/helper/bin/gmessages-helper.exe')" />
     <Content Include="../../experiments/GoogleMessages/helper/UPSTREAM_LICENSE.txt" Link="GOOGLE_MESSAGES_LICENSE.txt" CopyToOutputDirectory="PreserveNewest" />

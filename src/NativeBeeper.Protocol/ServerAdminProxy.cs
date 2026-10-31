@@ -36,4 +36,7 @@ public sealed class PairedDevicesProxy(ProtocolClient client) : IPairedDevices
 
     public Task<JoinDenied> DenyJoinAsync(string id, CancellationToken cancellationToken = default) =>
         client.CallAsync<JoinIdParams, JoinDenied>(ProtocolMethods.DevicesDenyJoin, new JoinIdParams(id), cancellationToken);
+
+    public Task<JoinLinkIssued> JoinLinkAsync(string? address, CancellationToken cancellationToken = default) =>
+        client.CallAsync<JoinLinkParams, JoinLinkIssued>(ProtocolMethods.DevicesJoinLink, new JoinLinkParams(address), cancellationToken);
 }

@@ -33,12 +33,15 @@ internal sealed partial class LinuxHostStartup : IDisposable
 
     public ServiceProvider Services { get; }
     public ProtocolHost Host { get; }
+    /// <summary>The server's own backup, whose schedule the run starts beside the history walk.</summary>
+    public NativeBeeper.Host.Backup.ServerBackupService Backup { get; private set; } = null!;
 
     /// <param name="root">The data root; every store of the host's own is under it.</param>
     /// <param name="keys">The host's sealing keys (<see cref="HostKeys.Prepare"/>).</param>
     /// <param name="restore">Whether <see cref="RestoreAsync"/> will run, so a client's restore of Messenger waits for the host's.</param>
     /// <param name="withGoogle">Google Messages and its renewal browser (<see cref="LinuxGoogle.Prepare"/>), or null to refuse it.</param>
-    public static LinuxHostStartup Compose(string root, HostKeys keys, Action<string> log, bool restore = false, LinuxGoogle? withGoogle = null)
+    /// <param name="backups">Where the server's daily backup goes (<see cref="LinuxServerOptions.Backups"/>), or null for none.</param>
+    public static LinuxHostStartup Compose(string root, HostKeys keys, Action<string> log, bool restore = false, LinuxGoogle? withGoogle = null, string? backups = null)
     {
         var step = new StepClock(log);
         var collection = new ServiceCollection();
@@ -121,6 +124,9 @@ internal sealed partial class LinuxHostStartup : IDisposable
             messenger.KnownChat, log, new HelperKeyFileCells(keys.HelperKey));
         // Signing out lets go of the index at once, rather than at the next search.
         messenger.ChatsChanged += (_, _) => { if (messenger.SelfId is null) kept.Warm(); };
+        // The server's own backup (SWITCHBOARD.md stage 10): its data and identity, never a sign-in, once a day into the folder its host maps.
+        var backup = new NativeBeeper.Host.Backup.ServerBackupService(new NativeBeeper.Host.Backup.ServerBackupPaths(root, keys.Folder), protector, backups,
+            new NativeBeeper.Host.Backup.BackendBackupMessenger(messenger), version, log);
         var host = ProtocolHost.Create(new ProtocolHostOptions(services.GetRequiredService<MessagingRouter>(), services.GetRequiredService<DirectoryRouter>(),
             services.GetRequiredService<MediaRouter>(), services.GetRequiredService<TypingRouter>(), google, services.GetRequiredService<GoogleMediaBackend>(),
             messenger, instagram, voice, feed, SharedChatSnoozes.Over(shared, new SealedChatSnoozeStore(Path.Combine(root, SealedChatSnoozeStore.FolderName), protector)),
@@ -152,8 +158,21 @@ internal sealed partial class LinuxHostStartup : IDisposable
             // not the whole list again.
             ConversationSyncStore: services.GetRequiredService<IPrivateStateStore>(),
             // Every conversation kept whole (SWITCHBOARD.md stage 8, protocol 24): history.db beside the other stores, sealed under the state key like them.
-            WholeHistory: new NativeBeeper.Storage.HistoryDatabase(Path.Combine(root, "history.db"), protector)));
+            WholeHistory: new NativeBeeper.Storage.HistoryDatabase(Path.Combine(root, "history.db"), protector),
+            // Its status to every device, Back up now and its password to the owner (protocol 26).
+            Backup: backup,
+            // Messenger and Instagram signed in in the server's own Chrome too (protocol 27, SWITCHBOARD.md 10.5), wherever Google's sign-in in it is offered.
+            MetaRemoteSignIn: remoteSignIn.Meta));
         built = host;
+        // Each change in how the backup stands is a signal in the host's sequence, so a client of 26 reads the status again.
+        backup.Changed += status => host.Services.Events?.AppendSignal(new AccountSignal(AccountSignals.Backup, !status.Stale));
+        // A PC backup's choices wait for the key the shared state is filed under, then go in as a move's would.
+        backup.CurrentKey = shared.Space.CurrentKeyAsync;
+        backup.ImportBundle = async (bundle, ct) =>
+        {
+            var imported = await shared.ImportBundleAsync(bundle, resume: true, ct).ConfigureAwait(false);
+            return (imported.Status, imported.Added, imported.Skipped, imported.Refused);
+        };
         // An account removed on the server's own page takes what the host kept of it, as a client's sign-out does (the whole history's copies).
         admin.Ended = host.Services.AccountEnded;
         movedUploads = host.Services.Uploads;
@@ -161,6 +180,7 @@ internal sealed partial class LinuxHostStartup : IDisposable
         // The Google sign-in keeper is never started without Google Messages: it renews through a browser this host then does not have. With it, the
         // restore starts it (LinuxHostStartup.Google.cs), as the Windows server's does.
         var startup = new LinuxHostStartup(services, host, feed, restores, log, withGoogle);
+        startup.Backup = backup;
         made = startup;
         startup.AttachMove(move, runner);
         return startup;

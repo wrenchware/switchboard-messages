@@ -9,7 +9,7 @@ namespace NativeBeeper.Storage;
 // Expendable, rebuildable local archive for search. Each profile has one random key pair
 // protected by IStateProtector; records are AES-GCM encrypted in process with their row id
 // as associated data. Native chat/message identities are stored only as keyed hashes.
-public sealed class MessageArchive(string path, IStateProtector protector)
+public sealed partial class MessageArchive(string path, IStateProtector protector)
 {
     public enum Kind { Chat = 1, Message = 2, Contacts = 3, CrawlState = 4 }
     public sealed record Entry(Kind Kind, string Id, byte[] Payload);

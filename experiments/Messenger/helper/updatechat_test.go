@@ -121,8 +121,8 @@ func archivedNow(t *testing.T, a *adapter, key int64) bool {
 	return archived
 }
 
-// The move shows only once Messenger says the conversation is in its new folder, in the reply or on the socket around
-// it. Anything less is unconfirmed: this copy stays as Messenger last described it, and nothing is sent again.
+// A move back to the inbox shows only once Messenger says the conversation is there, in the reply or on the socket
+// around it. Anything less is unconfirmed: this copy stays as Messenger last described it, and nothing is sent again.
 func TestAFolderMoveIsShownOnlyWhenMessengerStatesIt(t *testing.T) {
 	inboxRow := func(key int64) *table.LSTable {
 		return &table.LSTable{LSMoveThreadToInboxAndUpdateParent: []*table.LSMoveThreadToInboxAndUpdateParent{{ThreadKey: key}}}
@@ -206,6 +206,49 @@ func TestArchivingIsConfirmedByEitherFormOfMessengersStatement(t *testing.T) {
 			}
 			if chat, ok := result.(viewChat); !ok || !chat.Archived {
 				t.Fatalf("a confirmed archive answered %+v", result)
+			}
+		})
+	}
+}
+
+// Messenger archives on request and never says so to the device that asked (2026-10-30), so an archive it acknowledged
+// is applied and saved as its own statement would be. A refusal or a failed request still moves nothing.
+func TestAnAcknowledgedArchiveIsApplied(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		reply    *table.LSTable
+		err      error
+		code     string
+		archived bool
+	}{
+		{name: "bare acknowledgement", reply: &table.LSTable{}, code: "", archived: true},
+		{name: "no reply table", reply: nil, code: "", archived: true},
+		{name: "refused", reply: &table.LSTable{LSHandleFailedTask: []*table.LSHandleFailedTask{{}}}, code: "update_rejected", archived: false},
+		{name: "request failed", err: errors.New("socket closed"), code: "update_failed", archived: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, sent := folderAdapter(t, func(socket.Task) (*table.LSTable, error) { return tc.reply, tc.err })
+			result, code := call(a, "ui.updateChat", `{"chatId":"41","archived":true}`)
+			if code != tc.code {
+				t.Fatalf("answered %q, want %q", code, tc.code)
+			}
+			if len(*sent) != 1 {
+				t.Fatalf("sent %d requests", len(*sent))
+			}
+			if got := archivedNow(t, a, 41); got != tc.archived {
+				t.Fatalf("archived=%v afterwards, want %v", got, tc.archived)
+			}
+			if code == "" {
+				if chat, ok := result.(viewChat); !ok || !chat.Archived {
+					t.Fatalf("an acknowledged archive answered %+v", result)
+				}
+			}
+			if len(a.folders.pending) != 0 {
+				t.Fatal("a finished move left its watch behind")
+			}
+			restartIdentityAdapter(t, a)
+			if got := archivedNow(t, a, 41); got != tc.archived {
+				t.Fatalf("archived=%v after a restart, want %v", got, tc.archived)
 			}
 		})
 	}

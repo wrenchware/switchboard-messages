@@ -9,7 +9,7 @@ namespace NativeBeeper.Storage;
 // inside it: the cache evicts by use and Clear pictures empties it, and neither may take a photo somebody chose to keep.
 // Bytes are protected as the cache protects them (IStateProtector); keys are digests the caller makes; the owner, the
 // conversation a reference came from, is protected too, and is read back only when an account signs out. 2026-10-04.
-public sealed class SavedPhotoStore(string path, IStateProtector protector, long capacity = SavedPhotoStore.DefaultCapacity) : ISavedPhotoStore
+public sealed partial class SavedPhotoStore(string path, IStateProtector protector, long capacity = SavedPhotoStore.DefaultCapacity) : ISavedPhotoStore
 {
     public const long DefaultCapacity = 1024L * 1024 * 1024;
     // As the media cache: a photo larger than this is not something a conversation draws either.

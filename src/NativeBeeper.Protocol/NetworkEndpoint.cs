@@ -18,6 +18,13 @@ public static class NetworkPairing
     public const string ClaimMethod = "pair.claim";
     /// <summary>The upgrade header that carries the pairing code, in place of <c>Authorization</c>.</summary>
     public const string Header = "X-Messages-Pair";
+    /// <summary>
+    /// The header a refusal of a token names its reason in, when it has one a device should say (stage 10, protocol 26): <see cref="RefusalRestored"/>, the server was restored
+    /// from a backup made before this device joined (or the restore forgot it), so it asks to join again. Any server version may send it; a device that does not know it reads
+    /// a refused token as before.
+    /// </summary>
+    public const string RefusalHeader = "X-Messages-Refusal";
+    public const string RefusalRestored = "restored";
     /// <summary>The longest device name a host keeps; a longer one is cut.</summary>
     public const int MaxDeviceName = 64;
 
@@ -178,6 +185,9 @@ public sealed record PairClaimed(string DeviceId, string Token);
 /// <summary>The host turned the pairing code away: wrong, used or expired. Nothing about the code is in the message.</summary>
 public sealed class PairingRefusedException() : UnauthorizedAccessException("The server did not accept the pairing code.");
 
+/// <summary>The server refused this device's token because it was restored from a backup made before the device joined, or the restore forgot the device: it asks to join again.</summary>
+public sealed class ServerRestoredException() : UnauthorizedAccessException("This server was restored from an earlier backup. Ask to join again.");
+
 /// <summary>
 /// The host did not look at the pairing code because a code was tried too recently (from anywhere, or from this address after wrong ones). The code is
 /// not spent: a later try may succeed, so this is a connection that failed, not a refusal.
@@ -263,6 +273,7 @@ public static class NetworkEndpoint
                 return new WebSocketFrameChannel(opened, log);
             }
             catch (CertificateMismatchException) { Refused("fingerprint"); throw; }
+            catch (ServerRestoredException) { Refused("restored"); throw; }
             catch (UnauthorizedAccessException) { Refused("token"); throw; }
         };
     }
@@ -435,8 +446,10 @@ public static class NetworkEndpoint
         catch (Exception ex)
         {
             var status = client.HttpStatusCode;
+            var restored = client.HttpResponseHeaders?.TryGetValue(NetworkPairing.RefusalHeader, out var words) == true && words.Contains(NetworkPairing.RefusalRestored);
             client.Dispose();
             if (Volatile.Read(ref mismatch) == 1) throw new CertificateMismatchException();
+            if (status == HttpStatusCode.Unauthorized && restored) throw new ServerRestoredException();
             if (status == HttpStatusCode.Unauthorized) throw new UnauthorizedAccessException("The server refused the token.");
             if (status == HttpStatusCode.TooManyRequests) throw new PairingPacedException();
             // Only a join connection is answered 409 (the server has nobody, no paired device and no page, who could approve it) or 403 (it asked from outside the home network).

@@ -3,7 +3,7 @@ using System.Text;
 
 namespace NativeBeeper.Presentation.Services;
 
-public enum TrayCommand { Open, OpenChat, OpenUnread, NewChat, Console, PauseHour, PauseMorning, Resume, Settings, Quit }
+public enum TrayCommand { Open, OpenChat, OpenUnread, NewChat, Console, PauseHour, PauseMorning, Resume, Settings, Quit, ServerPage, StopServer }
 
 // One entry of the notification-area menu. Id 0 is never chosen: separators, the "Pause notifications" submenu's own
 // row and the disabled line saying until when notifications are paused all carry 0, and their Command means nothing.
@@ -16,15 +16,16 @@ public sealed record TrayMenuItem(int Id, string Text, TrayCommand Command, stri
 public static class TrayMenuModel
 {
     public const int OpenId = 1, QuitId = 2, NewChatId = 3, ConsoleId = 4, SettingsId = 5;
-    public const int PauseHourId = 10, PauseMorningId = 11, ResumeId = 12, OpenUnreadId = 13, FirstChatId = 100;
+    public const int PauseHourId = 10, PauseMorningId = 11, ResumeId = 12, OpenUnreadId = 13, ServerPageId = 14, StopServerId = 15, FirstChatId = 100;
     public const int UnreadShown = 5, TitleLength = 40;
 
     public static IReadOnlyList<TrayMenuItem> Build(IReadOnlyList<(string ChatId, string Title, string Service)> unread,
-        int unreadTotal, bool notificationsOn, DateTimeOffset? pausedUntil, bool consoleAvailable, DateTimeOffset nowLocal)
-        => Build(unread, unreadTotal, notificationsOn, pausedUntil, consoleAvailable, nowLocal, TimeZoneInfo.Local);
+        int unreadTotal, bool notificationsOn, DateTimeOffset? pausedUntil, bool consoleAvailable, DateTimeOffset nowLocal, bool ownServer = false)
+        => Build(unread, unreadTotal, notificationsOn, pausedUntil, consoleAvailable, nowLocal, TimeZoneInfo.Local, ownServer);
 
+    /// <param name="ownServer">This PC runs its own Messages Server (SWITCHBOARD.md 10.7): the menu offers its page and "Stop Messages Server".</param>
     public static IReadOnlyList<TrayMenuItem> Build(IReadOnlyList<(string ChatId, string Title, string Service)> unread,
-        int unreadTotal, bool notificationsOn, DateTimeOffset? pausedUntil, bool consoleAvailable, DateTimeOffset now, TimeZoneInfo zone)
+        int unreadTotal, bool notificationsOn, DateTimeOffset? pausedUntil, bool consoleAvailable, DateTimeOffset now, TimeZoneInfo zone, bool ownServer = false)
     {
         var items = new List<TrayMenuItem>
         {
@@ -57,8 +58,12 @@ public static class TrayMenuModel
             }
         }
         items.Add(new(SettingsId, "Settings", TrayCommand.Settings));
+        // A PC that runs its own Messages Server (owner D13, 2026-10-30): Quit closes Messages only, and the server goes on serving the phone and keeping Google
+        // signed in; Stop Messages Server closes both. The page is the server's own, on this PC.
+        if (ownServer) items.Add(new(ServerPageId, "Open server page", TrayCommand.ServerPage));
         items.Add(Separator());
         items.Add(new(QuitId, "Quit Messages", TrayCommand.Quit));
+        if (ownServer) items.Add(new(StopServerId, "Stop Messages Server", TrayCommand.StopServer));
         return items;
     }
 

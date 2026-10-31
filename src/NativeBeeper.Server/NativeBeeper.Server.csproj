@@ -29,24 +29,19 @@
     <Version>$([System.Text.RegularExpressions.Regex]::Replace($([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)../NativeBeeper.App/NativeBeeper.App.csproj')), '(?s)^.*?&lt;Version&gt;([^&lt;]+)&lt;/Version&gt;.*$', '$1'))</Version>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
     <ProjectReference Include="../NativeBeeper.Core/NativeBeeper.Core.csproj" />
     <ProjectReference Include="../NativeBeeper.Protocol/NativeBeeper.Protocol.csproj" />
     <ProjectReference Include="../NativeBeeper.Backends/NativeBeeper.Backends.csproj" />
     <ProjectReference Include="../NativeBeeper.Presentation/NativeBeeper.Presentation.csproj" />
     <ProjectReference Include="../NativeBeeper.Storage/NativeBeeper.Storage.csproj" />
     <ProjectReference Include="../NativeBeeper.Host/NativeBeeper.Host.csproj" />
-    <!-- The network door, its page, pushes and pairing (SWITCHBOARD.md 10.7): the Linux host's, on 127.0.0.1 and the tailnet. It brings ASP.NET Core into this
-         program only; the app never references it (ProtocolNetworkChecks). -->
-    <ProjectReference Include="../NativeBeeper.Host.Network/NativeBeeper.Host.Network.csproj" />
     <ProjectReference Include="../NativeBeeper.Windows/NativeBeeper.Windows.csproj" />
     <ProjectReference Include="../NativeBeeper.Windows.Browser/NativeBeeper.Windows.Browser.csproj" />
   </ItemGroup>
   <ItemGroup>
     <!-- No WinUI types, so the harness links this file as well. -->
     <Compile Include="../NativeBeeper.App/Services/RunMarker.cs" Link="RunMarker.cs" />
-    <!-- The tailnet door's supervisor, the Linux host's own (plain C#, its namespace kept): the same arguments, line routing and restarts on Windows. -->
-    <Compile Include="../NativeBeeper.Server.Linux/TailnetDoor.cs" Link="TailnetDoor.cs" />
   </ItemGroup>
   <!-- The providers' helpers are found beside the program, as they are beside the app's (HelperConnection). -->
   <ItemGroup>
@@ -54,7 +49,5 @@
     <Content Include="../../experiments/Messenger/helper/bin/messenger-helper.exe" Link="messenger-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/Messenger/helper/bin/messenger-helper.exe')" />
     <Content Include="../../experiments/GoogleVoice/helper/bin/gvoice-helper.exe" Link="gvoice-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/GoogleVoice/helper/bin/gvoice-helper.exe')" />
     <Content Include="../../experiments/Instagram/helper/bin/instagram-helper.exe" Link="instagram-helper.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/Instagram/helper/bin/instagram-helper.exe')" />
-    <!-- The server's own door on the owner's tailnet (SWITCHBOARD.md 10.7), built by experiments\Tailnet\Build.ps1; its modules' licences are in THIRD_PARTY_NOTICES.md. -->
-    <Content Include="../../experiments/Tailnet/door/bin/windows-amd64/messages-tailnet.exe" Link="messages-tailnet.exe" CopyToOutputDirectory="PreserveNewest" Condition="Exists('../../experiments/Tailnet/door/bin/windows-amd64/messages-tailnet.exe')" />
   </ItemGroup>
 </Project>

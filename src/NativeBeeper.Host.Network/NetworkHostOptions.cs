@@ -64,19 +64,6 @@ internal sealed record NetworkHostOptions(string DataFolder, IStateProtector Pro
     public string? PagePassword { get; init; }
 
     /// <summary>
-    /// The server's first run (SWITCHBOARD.md 10.4): with no <see cref="PagePassword"/>, the page is on all the same, set up by a one-time setup code printed where
-    /// <see cref="ShowCode"/> prints, then a password chosen on it and kept as a hash with the keys. Off (the harness's hosts, the sample server) leaves the page off
-    /// without a password, as before.
-    /// </summary>
-    public bool FirstRun { get; init; }
-
-    /// <summary>Whether an address counts as the home network for the page and asking to join; <see cref="ServerPage.FromHome(System.Net.IPAddress?)"/> unless a check says otherwise.</summary>
-    internal Func<System.Net.IPAddress?, bool>? HomeCheck { get; init; }
-
-    /// <summary>What "Fix it for me" calls Tailscale's API through: the harness's stand-in for it; null for the network.</summary>
-    internal HttpMessageHandler? TailscaleHandler { get; init; }
-
-    /// <summary>
     /// A Unix socket for the server's door on the owner's tailnet (<see cref="TailnetRelay"/>, SWITCHBOARD.md 4.7): a second listener with the same TLS, door and
     /// routes as the port, whose connections each begin with a PROXY line naming the tailnet device. Null, the default, opens none. Its folder is made private and
     /// a socket left there removed (<see cref="TailnetRelay.Prepare"/>).
@@ -100,36 +87,6 @@ internal sealed record NetworkHostOptions(string DataFolder, IStateProtector Pro
 
     /// <summary>What the transports the page makes send through: the harness's stand-in for Google; null for the network.</summary>
     internal HttpMessageHandler? PushHandler { get; init; }
-
-    /// <summary>The server's backup, restore and reset as its page offers them (SWITCHBOARD.md stage 10); null shows no Backups card. Its stale notice goes to the phones' pushes.</summary>
-    internal ServerPageBackups? Backups { get; init; }
-
-    /// <summary>The record of the restore this server was made from, when it was (<see cref="NativeBeeper.Host.Backup.RestoredMark"/>): an unknown token is then told so.</summary>
-    internal NativeBeeper.Host.Backup.RestoredMark? Restored { get; init; }
-
-    /// <summary>
-    /// The Windows server on its own PC (SWITCHBOARD.md 10.7): takes the one-time code Messages opens its page with (<see cref="NativeBeeper.Host.LocalPageLink"/>), from a
-    /// browser on this PC only. Null on every other host.
-    /// </summary>
-    public Func<string?, bool>? OnceSignIn { get; init; }
-
-    /// <summary>
-    /// The Windows server on its own PC: a signed-in browser on this PC (loopback, never a relayed tailnet device) is not asked for the page's password again. That
-    /// browser's session came from Messages' one-time code or the password, and the PC's own user is who runs this server. False on every other host.
-    /// </summary>
-    public bool DesktopTrust { get; init; }
-
-    /// <summary>
-    /// The certificate's private key is kept sealed with <see cref="Protector"/> (the Windows server's DPAPI, SWITCHBOARD.md 10.7), as its other secrets are; false keeps
-    /// it plain PEM in the keys folder (the Linux host's keys volume).
-    /// </summary>
-    public bool SealTlsKey { get; init; }
-
-    /// <summary>
-    /// The Windows server on its own PC: Connect on its page, from a browser on this PC, opens that service's native sign-in on the desktop (it asks Messages, which owns
-    /// those windows). Takes the server's word for the service (<c>ServerAccountProviders</c>); false when it could not ask. Null on every other host.
-    /// </summary>
-    public Func<string, bool>? DesktopSignIn { get; init; }
 
     // A record's own text prints every member, the password with them: this one names only what is safe to see.
     public override string ToString() => $"NetworkHostOptions {{ BindAddress = {BindAddress}, Port = {Port}, Page = {(PagePassword is null ? "off" : "set")}, Relay = {(RelaySocket is null ? "off" : "on")} }}";

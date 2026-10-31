@@ -17,8 +17,7 @@ namespace NativeBeeper.Server.Linux;
 /// <c>Tailnet</c> folder. Its standard output is read line by line: the sign-in link and the Tailnet Lock key go to the container's own log, as a pairing code
 /// does; its report for the server's page (state, sign-in link, owner, key expiry, Tailnet Lock, access rules) to the <see cref="TailnetBoard"/> the page reads,
 /// held in memory and never logged; and every other line, fixed words and counts, to the server's log. A door that ends by itself is started again, waiting 2 s and doubling to 5 minutes (back
-/// to 2 s after a run of 10 minutes). The stop ends its input, which it takes as the word to close its node, and kills it after 5 s. The page's "Use another Tailscale
-/// account" (<see cref="SignOut"/>) writes <c>logout</c> on its input instead: the door signs out and ends, its state folder is emptied, and it starts again at once.
+/// to 2 s after a run of 10 minutes). The stop ends its input, which it takes as the word to close its node, and kills it after 5 s.
 /// </para>
 /// </summary>
 internal sealed partial class TailnetDoor
@@ -73,66 +72,9 @@ internal sealed partial class TailnetDoor
     private Task supervising = Task.CompletedTask;
     private int unreadable;
 
-    private readonly string stateFolder;
-    private int forgetting;
-
-    /// <summary>The exit code with which the door says it signed out on the server's "logout" line (main.go's forgetCode): its state is then removed and it starts at once.</summary>
-    internal const int ForgetCode = 3;
-
-    private TailnetDoor(ProcessStartInfo start, string stateFolder, string? authKey, Action<string> log, Action<string> console, Func<ProcessStartInfo, Process> launch,
-        TailnetBoard? board)
+    private TailnetDoor(ProcessStartInfo start, string? authKey, Action<string> log, Action<string> console, Func<ProcessStartInfo, Process> launch, TailnetBoard? board)
     {
-        this.start = start; this.stateFolder = stateFolder; this.authKey = authKey; this.log = log; this.console = console; this.launch = launch; this.board = board;
-        if (board is not null) board.SignOut = SignOut;
-    }
-
-    /// <summary>
-    /// "Use another Tailscale account" (SWITCHBOARD.md 10.8): asks the running door to sign its node out (a <c>logout</c> line on its input); once it has ended, its state
-    /// folder is removed and it starts again at once, with no identity, so it asks for a new sign-in link. False when no door is running to ask.
-    /// Logged: <c>server tailnet sign_out asked</c>, then <c>server tailnet forgotten</c> or <c>server tailnet forget failed type=</c>.
-    /// </summary>
-    public bool SignOut()
-    {
-        Process? process;
-        lock (gate) process = running;
-        if (process is null || stopping.IsCancellationRequested) return false;
-        Interlocked.Exchange(ref forgetting, 1);
-        try
-        {
-            process.StandardInput.Write("logout\n");
-            process.StandardInput.Flush();
-        }
-        catch (Exception failure) when (failure is IOException or ObjectDisposedException or InvalidOperationException)
-        {
-            // A door that is ending already: its state is still forgotten before it starts again.
-            log($"server tailnet sign_out failed type={failure.GetType().Name}");
-        }
-        log("server tailnet sign_out asked");
-        board?.Set(null);
-        return true;
-    }
-
-    // The door's state (its node key and Tailscale's own files), removed so it starts as a new machine. Whatever is in the folder is the door's: nothing else is kept there.
-    private void Forget()
-    {
-        try
-        {
-            if (Directory.Exists(stateFolder))
-            {
-                foreach (var file in Directory.EnumerateFiles(stateFolder)) File.Delete(file);
-                foreach (var folder in Directory.EnumerateDirectories(stateFolder))
-                {
-                    // A link is unlinked, never followed.
-                    if (new DirectoryInfo(folder).LinkTarget is not null) Directory.Delete(folder, false);
-                    else Directory.Delete(folder, true);
-                }
-            }
-            log("server tailnet forgotten");
-        }
-        catch (Exception failure) when (failure is IOException or UnauthorizedAccessException)
-        {
-            log($"server tailnet forget failed type={failure.GetType().Name}");
-        }
+        this.start = start; this.authKey = authKey; this.log = log; this.console = console; this.launch = launch; this.board = board;
     }
 
     /// <summary>
@@ -164,7 +106,7 @@ internal sealed partial class TailnetDoor
         }
         if (OperatingSystem.IsWindows()) Directory.CreateDirectory(stateFolder);
         else Directory.CreateDirectory(stateFolder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        var door = new TailnetDoor(StartInfo(executable, stateFolder, socket, name, port, authKey is not null), stateFolder, authKey, log, console, launch ?? HelperJob.Start, board);
+        var door = new TailnetDoor(StartInfo(executable, stateFolder, socket, name, port, authKey is not null), authKey, log, console, launch ?? HelperJob.Start, board);
         if (authKey is not null) log("server tailnet authkey=given");
         door.supervising = Task.Run(door.SuperviseAsync);
         return door;
@@ -186,9 +128,6 @@ internal sealed partial class TailnetDoor
         if (authKeyOnInput) start.ArgumentList.Add("--authkey-stdin");
         start.Environment.Clear();
         if (OperatingSystem.IsLinux()) start.Environment["MESSAGES_HELPER_PARENT_PID"] = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
-        // On Windows (the PC's own server, SWITCHBOARD.md 10.7) a Go program finds the system's own libraries through SystemRoot, a path and nothing secret; the job the
-        // server keeps its helpers in ends the door with the server, so it needs no parent watch.
-        if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("SystemRoot") is { Length: > 0 } systemRoot) start.Environment["SystemRoot"] = systemRoot;
         return start;
     }
 
@@ -200,7 +139,7 @@ internal sealed partial class TailnetDoor
         line.Length > LongestLine ? "unreadable"
         : PageLine().IsMatch(line) ? "page"
         : LoginLine().IsMatch(line) || LockLine().IsMatch(line) ? "console"
-        : LogLine().IsMatch(line) && !line.StartsWith("tailnet login url", StringComparison.Ordinal) && !line.StartsWith("tailnet lock sign", StringComparison.Ordinal) ? "log"
+        : LogLine().IsMatch(line) && !line.StartsWith("tailnet login", StringComparison.Ordinal) && !line.StartsWith("tailnet lock sign", StringComparison.Ordinal) ? "log"
         : "unreadable";
 
     private void Take(string line)
@@ -258,14 +197,6 @@ internal sealed partial class TailnetDoor
                 {
                     log($"server tailnet stopped code={code}{extra}");
                     break;
-                }
-                // Signed out on the page's "Use another Tailscale account": its state goes, and it starts again at once to ask for a new sign-in.
-                if (Interlocked.Exchange(ref forgetting, 0) == 1)
-                {
-                    log($"server tailnet exited code={code} reason=sign_out{extra}");
-                    Forget();
-                    wait = FirstWait;
-                    continue;
                 }
                 if (ran.Elapsed >= Settled) wait = FirstWait;
                 log($"server tailnet exited code={code} restart_s={(long)Math.Ceiling(wait.TotalSeconds)}{extra}");

@@ -89,8 +89,6 @@ public static class Program
             HelperConnection.Allowed = name => UnavailableProviders.Runs(name) || name == LinuxGoogle.Helper;
             // Google Voice's helper too, but only beside the server's own Chrome, which signs Voice in and renews it (SWITCHBOARD.md 5.4).
             if (google.VoiceRuns) { var allowed = HelperConnection.Allowed; HelperConnection.Allowed = name => allowed(name) || name == LinuxGoogle.VoiceHelper; }
-            // Messenger's and Instagram's sign-in profiles are never kept: whatever a stopped server left goes (SWITCHBOARD.md 10.5).
-            ThrowawayChromeProfile.Sweep(google.SignInProfilesRoot, AppLog.Write);
         }
         AppLog.Write($"server started version={typeof(Program).Assembly.GetName().Version?.ToString(3)} host=linux lease=ok previous_exit={previousExit} restore={options.Restore} umask={mask}");
         // Whether each helper this host runs is beside it, said once at start: a missing one otherwise shows only when that provider is first connected.
@@ -101,83 +99,25 @@ public static class Program
             .Select(name => $"{name}={(File.Exists(HelperExecutables.PathFor(name)) ? "present" : "missing")}")));
         AppLog.Write($"server compose step=prelude ms={prelude.ElapsedMilliseconds}");
 
-        LinuxServerRun? current = null;
-        var signalled = 0;
+        var run = new LinuxServerRun(root, keys, options, AppLog.Write, previousExit, google);
         // Taken from the runtime's default (which ends the process at once), so the stop below runs: a send on the wire gets its bound, and every helper
-        // is closed before the process ends. A signal during a start again (below) stops the process, not only the run that was.
-        using var terminate = PosixSignalRegistration.Create(PosixSignal.SIGTERM, Stop(() => current, () => Interlocked.Exchange(ref signalled, 1), "sigterm"));
-        using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, Stop(() => current, () => Interlocked.Exchange(ref signalled, 1), "sigint"));
-        using var hangUp = PosixSignalRegistration.Create(PosixSignal.SIGHUP, Stop(() => current, () => Interlocked.Exchange(ref signalled, 1), "sighup"));
-        var backups = new NativeBeeper.Host.Backup.ServerBackupPaths(root, keys.Folder);
-        var protector = new FileKeyStateProtector(keys.StateKey);
+        // is closed before the process ends.
+        using var terminate = PosixSignalRegistration.Create(PosixSignal.SIGTERM, Stop(run, "sigterm"));
+        using var interrupt = PosixSignalRegistration.Create(PosixSignal.SIGINT, Stop(run, "sigint"));
+        using var hangUp = PosixSignalRegistration.Create(PosixSignal.SIGHUP, Stop(run, "sighup"));
         Func<string, string?> given = name => name == PagePasswordVariable ? pagePassword : Environment.GetEnvironmentVariable(name);
-        var deferRestore = false;
-        int code;
-        while (true)
-        {
-            // A restore or a reset chosen on the server's page (SWITCHBOARD.md stage 10) is applied here, before anything opens a store, and a half-finished one is finished or
-            // swept. Refused while any service is signed in here.
-            if (deferRestore) AppLog.Write("server restore deferred reason=backup_running");
-            else if (!ApplyRestore(backups, protector, options, string.IsNullOrEmpty(pagePassword))) { code = 4; break; }
-            var run = new LinuxServerRun(root, keys, options, AppLog.Write, previousExit, google);
-            Volatile.Write(ref current, run);
-            if (Volatile.Read(ref signalled) == 1) run.RequestStop("signal");
-            code = run.RunAsync(LinuxServerRun.Network(options, keys, AppLog.Write, name => name == TailnetAuthKeyVariable ? tailnetAuthKey : given(name),
-                run.RequestRestart)).GetAwaiter().GetResult();
-            if (!run.RestartRequested || Volatile.Read(ref signalled) == 1) break;
-            // A backup that did not stop is never run beside a restore or a reset: the server opens as it was, and they apply at the next start.
-            deferRestore = run.BackupStillRunning;
-            // The run stopped cleanly to start again: helpers may start in the next one, and its restore is paced as after a clean stop.
-            HelperConnection.RefuseStarts = false;
-            previousExit = "clean";
-            AppLog.Write("server starting again reason=restore");
-        }
+        var code = run.RunAsync(LinuxServerRun.Network(options, keys, AppLog.Write, name => name == TailnetAuthKeyVariable ? tailnetAuthKey : given(name))).GetAwaiter().GetResult();
         RunMarker.End(RunMarkerPath);
         FlushLogs();
         GC.KeepAlive(lease);
         return code;
     }
 
-    private static Action<PosixSignalContext> Stop(Func<LinuxServerRun?> run, Action signalled, string reason) => context =>
+    private static Action<PosixSignalContext> Stop(LinuxServerRun run, string reason) => context =>
     {
         context.Cancel = true;
-        signalled();
-        run()?.RequestStop(reason);
+        run.RequestStop(reason);
     };
-
-    // The restore or reset waiting for this start, if any. A signed-in service refuses a restore: a session is never restored beside one in use. The files say what is
-    // signed in, since nothing is open yet.
-    // False: a restore's moves were begun and not finished, and the server must not open on half of them (the next start finishes them).
-    // pagePasswordFromBackup: the page's password hash comes back from the backup only when this server has none in its environment (SWITCHBOARD.md 10.4).
-    private static bool ApplyRestore(NativeBeeper.Host.Backup.ServerBackupPaths paths, FileKeyStateProtector protector, LinuxServerOptions options, bool pagePasswordFromBackup)
-    {
-        if (!NativeBeeper.Host.Backup.ServerRestore.Planned(paths) && !NativeBeeper.Host.Backup.ServerRestore.ResetPlanned(paths)) return true;
-        var keep = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "server.log", LogRotation.PreviousPath("server.log"), HostLease.FileName, "server-run.marker", RunMarker.VersionPath("server-run.marker"),
-        };
-        try
-        {
-            NativeBeeper.Host.Backup.ServerRestore.ApplyPendingAsync(paths, protector, options.Backups(Directory.Exists), SignedIn, AppLog.Write, keep: keep,
-                signedInForReset: SignedInForReset, restorePagePassword: pagePasswordFromBackup).GetAwaiter().GetResult();
-        }
-        catch (Exception failure)
-        {
-            // A failure before the list of moves ends the plan inside (said on the page); one here is a reset or a finish that stopped part way.
-            AppLog.Write($"server restore failed type={failure.GetType().Name}");
-        }
-        if (!NativeBeeper.Host.Backup.ServerRestore.IsUnfinished(paths) && !NativeBeeper.Host.Backup.ServerRestore.ResetPlanned(paths)) return true;
-        AppLog.Write("server start refused reason=restore_unfinished");
-        Console.Error.WriteLine("Messages Server didn't start: " + Explain("restore_unfinished"));
-        return false;
-    }
-
-    // What Reset server signs out before it is applied; Google Messages is unpaired here by the reset itself.
-    private static bool SignedInForReset() => MessengerBackend.HasSavedSession || GoogleVoiceAccounts.HasSavedSessions
-        || NativeBeeper.Storage.InstagramSessionStore.Exists(AppPaths.Combine("Instagram"));
-
-    private static bool SignedIn() => MessengerBackend.HasSavedSession || GoogleSessionProfile.HasSavedSession || GoogleVoiceAccounts.HasSavedSessions
-        || NativeBeeper.Storage.InstagramSessionStore.Exists(AppPaths.Combine("Instagram"));
 
     private static string RunMarkerPath => AppPaths.Combine("server-run.marker");
 
@@ -203,11 +143,9 @@ public static class Program
         "host_locked" => "Another Messages Server is already running on this data folder.",
         "keys_folder_missing" => "The keys folder doesn't exist. Create it (with Docker, it's the keys volume).",
         "keys_in_data" => "The keys folder and the data folder overlap. Keep them apart.",
-        "key_missing" => "The data folder has data but the keys folder has no key for it: the keys were lost, or belong with other data. The data can't be read without them. "
-            + "To start fresh and restore a backup: move everything out of the data folder, start the server, and choose Restore from a backup on its page.",
+        "key_missing" => "The data folder has data but the keys folder has no key for it: the keys were lost, or belong with other data.",
         "key_mismatch" => "The keys folder belongs to a different server's data.",
         "key_invalid" => "The key in the keys folder can't be read.",
-        "restore_unfinished" => "A restore or a reset stopped part way. Start the server again to finish it; it opens nothing until then. The log says what failed.",
         _ => "The server couldn't start.",
     };
 

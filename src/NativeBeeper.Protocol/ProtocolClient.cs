@@ -265,16 +265,6 @@ public sealed class ProtocolClient : IDisposable, IOperationOutcomes
         _ = Task.Run(ReconnectAsync, CancellationToken.None);
     }
 
-    /// <summary>
-    /// The host was just started and is expected any moment (the Windows app starting its own server, SWITCHBOARD.md 10.7): the background attempt need not wait out its
-    /// pause, as when a call finds the connection gone, within <see cref="CallRetryInterval"/>. Nothing while connected or refused.
-    /// </summary>
-    public void Hurry()
-    {
-        if (link is { Closed: false } || refusal is not null) return;
-        WakeReconnect();
-    }
-
     // A call found the connection gone: the background attempt need not wait out its pause, if the last one is not too recent. Not while the host refuses this
     // client for good: a call changes nothing about that, and the person's own pairing again is what wakes it (RetryRefused).
     private void WakeReconnect()

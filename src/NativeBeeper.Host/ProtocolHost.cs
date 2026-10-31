@@ -51,9 +51,6 @@ namespace NativeBeeper.Host;
 /// <param name="Admin">Given (the Linux server), the host serves its owner device its status, its accounts and their removal (<c>host.status</c>, <c>host.accounts</c>, <c>host.removeAccount</c>, protocol 20). Null serves none.</param>
 /// <param name="WholeHistory">Given (the two servers), the host keeps every conversation whole in this store (<see cref="ConversationHistory"/>, SWITCHBOARD.md stage 8), answers its
 /// clients' history reads from it and serves <c>history.*</c> (protocol 24). Null (the app's in-process host and the loopback) keeps none and reads the services as before.</param>
-/// <param name="Backup">Given (the Linux server), the host serves its own backup (<c>server.backup.*</c>, protocol 26). Null serves none.</param>
-/// <param name="MetaRemoteSignIn">Given (the Linux server run with its own Chrome), the host signs Messenger and Instagram in in that Chrome on a throwaway profile, shown in the client's window
-/// (<c>accounts.remoteSignIn</c>, protocol 27), and says which in its state. Null serves neither and says nothing.</param>
 internal sealed record ProtocolHostOptions(
     MessagingRouter Messaging, DirectoryRouter Directory, MediaRouter Media, TypingRouter Typing,
     GoogleMessagesBackend Google, GoogleMediaBackend GoogleMedia, MessengerBackend Messenger, InstagramBackend Instagram, GoogleVoiceAccounts VoiceAccounts,
@@ -63,7 +60,7 @@ internal sealed record ProtocolHostOptions(
     SharedStateStore? SharedState = null, HostUnarchive? IncomingUnarchive = null, SavedPhotos? SavedPhotos = null, HostScheduled? Scheduled = null,
     IRemoteSignInHost? RemoteSignIn = null, IQrPairingHost? QrPairing = null, Func<bool>? BrowserOutOfDate = null, IRemoteSignInHost? VoiceRemoteSignIn = null,
     IAccountMove? AccountMove = null, IAccountGate? AccountGate = null, IHostLogs? Logs = null, IServerAdmin? Admin = null, IPrivateStateStore? ConversationSyncStore = null,
-    NativeBeeper.Storage.HistoryDatabase? WholeHistory = null, IServerBackup? Backup = null, IRemoteCookieSignInHost? MetaRemoteSignIn = null);
+    NativeBeeper.Storage.HistoryDatabase? WholeHistory = null);
 
 /// <summary>
 /// The ports a host serves in place of the providers it does not run (the Linux server: Google Messages, Google Voice and Instagram, SWITCHBOARD.md
@@ -208,8 +205,7 @@ internal sealed class ProtocolHost : IDisposable
             instagramAccount, googleAccount, voiceAccounts, options.Typing, identity,
             GoogleAbsent: unavailable?.GoogleAbsent == true, VoiceAbsent: unavailable?.VoiceAbsent == true, InstagramAbsent: unavailable?.Instagram is not null,
             UnarchivesChats: unarchivesChats, FiresScheduled: scheduled is not null, RemoteGoogleSignIn: options.RemoteSignIn is not null, QrPairing: options.QrPairing is not null,
-            ChromeOutOfDate: () => options.RemoteSignIn?.BrowserOutOfDate == true || options.BrowserOutOfDate?.Invoke() == true, RemoteVoiceSignIn: options.VoiceRemoteSignIn is not null,
-            RemoteMessengerSignIn: options.MetaRemoteSignIn?.Offers(RemoteSignInServices.Messenger) == true, RemoteInstagramSignIn: options.MetaRemoteSignIn?.Offers(RemoteSignInServices.Instagram) == true),
+            ChromeOutOfDate: () => options.RemoteSignIn?.BrowserOutOfDate == true || options.BrowserOutOfDate?.Invoke() == true, RemoteVoiceSignIn: options.VoiceRemoteSignIn is not null),
             AttachmentBatchRules.ItemLimit);
         var statePublisher = new StatePublisher(eventLog, builder.Build, write: log);
         publisher = statePublisher;
@@ -243,7 +239,7 @@ internal sealed class ProtocolHost : IDisposable
             Diagnostics: options.Diagnostics,
             HelperRestarts: GateRestarts(unavailable?.HelperRestarts ?? new HostHelperRestarter(google, options.Keeper, options.Messenger, options.Instagram, options.VoiceAccounts, log), options.AccountGate), KeptHistory: options.KeptHistory,
             MediaPreparer: media, IncomingCards: options.IncomingCards, ClientState: options.ClientState, Restores: options.Restores,
-            GoogleSignedIn: options.Keeper.SignedIn, AccountMove: options.AccountMove, Logs: options.Logs, Admin: options.Admin, Backup: options.Backup, SharedState: options.SharedState, Connections: roster, Scheduled: scheduled, RemoteSignIn: options.RemoteSignIn, QrPairing: options.QrPairing, VoiceRemoteSignIn: options.VoiceRemoteSignIn, MetaRemoteSignIn: options.MetaRemoteSignIn,
+            GoogleSignedIn: options.Keeper.SignedIn, AccountMove: options.AccountMove, Logs: options.Logs, Admin: options.Admin, SharedState: options.SharedState, Connections: roster, Scheduled: scheduled, RemoteSignIn: options.RemoteSignIn, QrPairing: options.QrPairing, VoiceRemoteSignIn: options.VoiceRemoteSignIn,
             AccountEnded: (account, key) =>
             {
                 savedPhotos?.Ended(account, key);

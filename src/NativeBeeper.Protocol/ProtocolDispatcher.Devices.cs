@@ -14,12 +14,6 @@ public sealed partial class ProtocolDispatcher
             Own: (connection, request, _, ct) => connection.JoinCallAsync(port => port.ApproveJoinAsync(ReadParams<JoinIdParams>(request).Id, ct)));
         routes[ProtocolMethods.DevicesDenyJoin] = new(typeof(JoinIdParams), typeof(JoinDenied), null,
             Own: (connection, request, _, ct) => connection.JoinCallAsync(port => port.DenyJoinAsync(ReadParams<JoinIdParams>(request).Id, ct)));
-        // From protocol 27; only the owner gets one, as for a new code (the port's rule).
-        routes[ProtocolMethods.DevicesJoinLink] = new(typeof(JoinLinkParams), typeof(JoinLinkIssued), null, Own: (connection, request, _, ct) =>
-        {
-            if (connection.negotiated < ProtocolVersion.JoinLinks) throw new NotSupportedException();
-            return connection.JoinCallAsync(port => port.JoinLinkAsync(ReadParams<JoinLinkParams>(request).Address, ct));
-        });
         return routes;
     }
 

@@ -157,29 +157,6 @@ internal static class MoveMarker
         return File.ReadAllLines(path).Where(line => line.Length > 0).ToHashSet(StringComparer.Ordinal);
     }
 
-    /// <summary>
-    /// The server a PC's own Messages Server is named by in the marker (SWITCHBOARD.md 10.7): the same word the client's replica is filed under
-    /// (<c>ReplicatedStateStore.LocalServer</c>), never a fingerprint, so a marker naming it is never mistaken for a server on the network.
-    /// </summary>
-    public const string LocalServer = "local";
-
-    /// <summary>The marker is about this PC's own server: its choices are (or are being) moved to <c>MessagesServer.exe</c> on this data root.</summary>
-    public static bool IsLocalServer(MoveMark mark) => string.Equals(mark.Server, LocalServer, StringComparison.Ordinal);
-
-    /// <summary>This root runs its own Messages Server: the switch was made and confirmed, so the window is that server's client and the server serves this root.</summary>
-    public static bool RunsOwnServer(MoveMark mark) => mark.State == MoveState.Moved && IsLocalServer(mark);
-
-    /// <summary>
-    /// Whether <c>MessagesServer.exe</c> may open the real data of <paramref name="dataRoot"/> (SWITCHBOARD.md 10.7, the lift of 3.2b). Only a root that was
-    /// switched to its own server (<see cref="RunsOwnServer"/>), for any start; and a root whose switch is under way, only for the window's own start that moves its
-    /// choices (<paramref name="connects"/> false: no account connects and nothing starts on its own). Anything else, an unreadable marker included, stays refused.
-    /// </summary>
-    public static bool ServerMayOpen(string dataRoot, bool connects)
-    {
-        var mark = Read(dataRoot);
-        return RunsOwnServer(mark) || mark.State == MoveState.Moving && IsLocalServer(mark) && !connects;
-    }
-
     /// <summary>Whether the marker says the choices are on the server named by <paramref name="fingerprint"/> (lower-case hex).</summary>
     public static bool MovedTo(string dataRoot, string? fingerprint) =>
         fingerprint is { Length: > 0 } && Read(dataRoot) is { State: MoveState.Moved, Server: { } server } && string.Equals(server, fingerprint, StringComparison.OrdinalIgnoreCase);

@@ -138,8 +138,7 @@ RUN set -eu; \
     rm -rf /var/lib/apt/lists/* /tmp/google-* ; \
     google-chrome-stable --version
 # What the browser may load and keep, set where the browser reads it and the server cannot be talked out of (docker/messages-server/chrome-policy.json): every address blocked but a short list
-# (the account sign-in, Messages for web's configuration page by path, and the few static hosts they need; Facebook's and Instagram's own sites for their sign-ins, with Instagram's inbox
-# blocked by path), no saved passwords or autofill, no Chrome account or sync, no developer tools or remote
+# (the account sign-in, Messages for web's configuration page by path, and the few static hosts they need), no saved passwords or autofill, no Chrome account or sync, no developer tools or remote
 # debugging, no downloads, file dialogs or extensions. URLBlocklist/URLAllowlist govern NAVIGATIONS (pages and frames) by the most specific match; what those pages then load follows what they ask for,
 # which is why the list names hosts and not google.com. The server reads the path from nowhere else and will not start Chrome without the file.
 COPY docker/messages-server/chrome-policy.json /etc/opt/chrome/policies/managed/messages-server.json

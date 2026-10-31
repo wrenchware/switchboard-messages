@@ -145,12 +145,6 @@ public static class AccountSignals
     public const string DefaultSmsApp = "defaultSmsApp";
     public const string Renumbered = "renumbered";
     public const string ReconnectAbandoned = "reconnectAbandoned";
-    /// <summary>The server's backup changed how it stands (protocol 26): a client reads <c>server.backup.status</c> again. <c>Value</c> says whether a good backup
-    /// was made in the last two days, or backups are not on. Never sent to a connection below 26.</summary>
-    public const string Backup = "backup";
-    /// <summary>The server's pushes were turned on, or their files replaced (protocol 27): an open phone asks for <c>push.offer</c> again and signs up, rather than
-    /// waiting for its next connection. Never sent to a connection below 27.</summary>
-    public const string Push = "push";
 }
 
 /// <summary>A progress report from a running mutation: <paramref name="Text"/> is for the caller to show and is never logged.</summary>

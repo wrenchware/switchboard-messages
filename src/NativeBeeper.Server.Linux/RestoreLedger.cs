@@ -1,7 +1,7 @@
 using System.Text.Json;
 using NativeBeeper.Core.Services;
 
-namespace NativeBeeper.Host;
+namespace NativeBeeper.Server.Linux;
 
 /// <summary>
 /// How often a Linux host may restore its saved accounts (each restore logs Messenger and Instagram in again), kept across starts in

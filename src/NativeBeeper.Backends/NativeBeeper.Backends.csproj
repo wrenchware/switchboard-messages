@@ -9,12 +9,10 @@
     <InternalsVisibleTo Include="messages-server" />
     <InternalsVisibleTo Include="NativeBeeper.ContractTests" />
     <InternalsVisibleTo Include="NativeBeeper.Host" />
-    <!-- The server page's Backups card words a backup's size and failures as the PC backup does (stage 10). -->
-    <InternalsVisibleTo Include="NativeBeeper.Host.Network" />
     <InternalsVisibleTo Include="NativeBeeper.Windows.Browser" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.13" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
     <ProjectReference Include="../NativeBeeper.Core/NativeBeeper.Core.csproj" />
     <ProjectReference Include="../NativeBeeper.Presentation/NativeBeeper.Presentation.csproj" />
     <ProjectReference Include="../NativeBeeper.Storage/NativeBeeper.Storage.csproj" />
@@ -26,7 +24,5 @@
     <Compile Include="../../experiments/GoogleMessages/NativeBeeper.GoogleMessages.Spike/HelperRequests.cs" Link="Services/GoogleMessages/HelperRequests.cs" />
     <Compile Include="../../experiments/GoogleMessages/NativeBeeper.GoogleMessages.Spike/HelperCallGate.cs" Link="Services/GoogleMessages/HelperCallGate.cs" />
     <Compile Include="../../experiments/GoogleMessages/NativeBeeper.GoogleMessages.Spike/HelperJob.cs" Link="Services/GoogleMessages/HelperJob.cs" />
-    <!-- What the Instagram sign-in keeps, shared by the PC's own window and the server's Chrome (SWITCHBOARD.md 10.5). -->
-    <Compile Include="../../experiments/Instagram/NativeBeeper.Instagram.Spike/InstagramSignInRules.cs" Link="Services/Instagram/InstagramSignInRules.cs" />
   </ItemGroup>
 </Project>

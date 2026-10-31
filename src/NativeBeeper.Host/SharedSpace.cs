@@ -100,13 +100,6 @@ public sealed class SharedSpace
     }
 
     /// <summary>
-    /// The key the space is filed under now: the pinned one, or the live one while nothing is pinned; null while nothing is signed in on the host and nothing is pinned. What
-    /// a restored PC backup's choices wait for (stage 10). Throws <see cref="SpaceUnavailableException"/> as <see cref="ServeAsync"/> does.
-    /// </summary>
-    internal async Task<string?> CurrentKeyAsync(CancellationToken cancellationToken) =>
-        await ServeAsync(live is null ? null : await live(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-
-    /// <summary>
     /// What a <c>state.*</c> call files under now, read before the store's gate. Throws <see cref="SpaceUnavailableException"/> while the space
     /// cannot be served, including a store that holds rows while nothing is signed in on the host and nothing is pinned.
     /// </summary>

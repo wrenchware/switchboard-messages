@@ -189,29 +189,18 @@ To turn it on:
    `MESSAGES_TAILNET=1` in `.env` and `docker compose up -d`; on Linux or Proxmox, `MESSAGES_TAILNET=1` in
    `/etc/messages-server/environment` and `systemctl restart messages-server` (the Proxmox script turns it on when
    asked).
-2. Open the server's page (its address in a browser at home). Its **Tailscale** card, and the first run's Tailscale
-   screen, walk you through the rest, each step ticked by itself once the server sees it done, or with a link to the
-   exact page of Tailscale's console:
-   - **Sign in to Tailscale** with your own account: a button, and the same link as a QR code to sign in on your phone.
-     The card moves on by itself. If Tailscale signs the server out later (its key expired, or it was logged out in the
-     console), the card says so and offers **Sign in again**, with no restart.
-   - **Approve the server**, when your Tailscale network asks for new machines to be approved.
-   - **Keep the server signed in** (key expiry off), otherwise Tailscale signs it out after 180 days; and the same for
-     each Messages phone, listed by name.
-   - **Only your devices reach it**: the server reads its own access rules. Tailscale's default rule (everyone reaches
-     everything) counts as done while your network holds only your own devices; otherwise the card gives the rule to
-     add (below), filled in with your login and its address.
-   - **Sign it for Tailnet Lock**, only when your network uses Tailnet Lock: the signing command is behind **Show the
-     command**, to run on one of your signing devices (Unraid's Tailscale plugin signs nodes on its Lock page).
-   - **Fix it for me** does all of that but Tailnet Lock: make an OAuth client in Tailscale (**Settings**, **OAuth
-     clients**, scopes **Devices: Core** and **Policy File**, both write) and paste its ID and secret once. The server
-     keeps them sealed with its keys (never in a backup; **Remove the OAuth client** forgets them), then turns off key
-     expiry for itself and your phones, approves them, and adds the rule to your access rules (only when missing, never
-     removing anything), and says what it changed.
-   - **Use another Tailscale account** signs the server out of Tailscale and forgets its machine, so it starts over with
-     a new sign-in. Remove the old machine in **Machines**.
+2. Open the server's page (its address in a browser at home, with the page's password). Its **Your tailnet** card walks
+   you through the rest, each step marked done or with what to do and a link to the right place in Tailscale's console:
+   - **Sign in to Tailscale** with your own account (the card shows the button while the server needs it, and moves on
+     by itself once you have).
+   - **Turn off key expiry**, otherwise Tailscale signs the server out after 180 days.
+   - **Sign it for Tailnet Lock**, when your tailnet uses Tailnet Lock: the card shows the `tailscale lock sign
+     nodekey:...` command to run on a signing device (Unraid's Tailscale plugin signs nodes on its Lock page when Unraid
+     is a signing node).
+   - **Who can reach it**: the server reads its own access rules and says whether only your devices can reach it, and if
+     not, gives the rule to paste (below), filled in with your login and its address.
 
-   Without the page (before its first run is done), the sign-in link and the Tailnet Lock key are in the container's log
+   Without the page (no `MESSAGES_ADMIN_PASSWORD`), the sign-in link and the Tailnet Lock key are in the container's log
    (**Logs**, or `docker logs messages-server 2>&1 | grep "tailnet login"`), never in `server.log`, again every 10
    minutes while needed. The link is only ever on the page or in the container's own output: whoever opens it chooses
    the tailnet the server joins.
@@ -250,8 +239,8 @@ account one rule to it, with no other rule (such as the default's `"*"`) reachin
 ```
 
 The server keeps the machine's identity in the keys volume (`Tailnet/`), so it survives updates and reboots. Turning
-`MESSAGES_TAILNET` off leaves the machine offline in your list; to drop it, choose **Use another Tailscale account** on
-the page first, then turn the switch off and remove the machine in **Machines**. A restored keys volume
+`MESSAGES_TAILNET` off leaves the machine offline in your list; to drop it, remove it in **Machines** and delete
+`Tailnet/` from the keys volume (the Backups command's `docker run`, with `rm -rf /keys/Tailnet`). A restored keys volume
 carries the identity too: never run it beside the original.
 
 What the logs say: `server network listening port=8787 relay=on` and `server tailnet started`; a device that came through
@@ -350,25 +339,16 @@ removed there instead, and the next oldest device takes over.
 
 ## The server's page
 
-The server has a page of its own on the same port: open `https://<this server>:8787/` in a browser on the home network
-(or your Tailscale network). It shows devices waiting to join, the server's version and uptime, the accounts it holds, and its
-paired devices; it approves a device that asks to join, removes a device, shows a QR code a phone scans to join (**Add a
-phone**) and a line a PC pastes (**Add a PC**), each asking for the password again; and it shows the end of the server's
-log. Removing an account stays in Messages' Manage server.
+With a password set, the server has a page of its own on the same port: open `https://<this server>:8787/` in a browser
+on the home network. It shows devices waiting to join, the server's version and uptime, the accounts it holds, and its
+paired devices; it approves a device that asks to join, removes a device, and makes a pairing code with the address and
+fingerprint a PC needs beside it (each asks for the password again); and it shows the end of the server's log. Removing an account stays in
+Messages' Manage server.
 
-**First run.** On its first start without a password, the server prints a one-time setup code to the container's output
-(`server setup code=XXXXX-XXXXX`, good for a day; **Logs** on Unraid, `docker logs messages-server 2>&1 | grep -i "setup
-code"`), never to `server.log`. The page's first visit asks for it, then for the page's password (12 characters or more),
-which the server keeps as a salted PBKDF2 hash beside its keys (`server-page.password` in the keys volume), never the
-password itself. The page then walks you through Tailscale, your accounts, a phone, notifications, a PC and backups, one
-screen each and every one skippable; a checklist on the front page keeps what is left until it is done or hidden. A
-restart prints a new code until the password is set. Forgot the password? Set `MESSAGES_ADMIN_PASSWORD` (below) and start
-the server again: it wins over the kept one.
-
-To set the password where the server is installed instead, set `MESSAGES_ADMIN_PASSWORD`: in Unraid, edit the container, choose **Add another Path, Port, Variable,
+To turn it on, set `MESSAGES_ADMIN_PASSWORD`: in Unraid, edit the container, choose **Add another Path, Port, Variable,
 Label or Device**, pick **Variable**, give it the key `MESSAGES_ADMIN_PASSWORD`, set **Password Mask** to Yes, enter the
 password and apply (a template from the install script already has the field). The page is off, and the log says
-`server page off reason=` why, for a password that is under 12 characters, over 128 bytes, or one Unraid would
+`server page off reason=` why, for a password that is empty, under 12 characters, over 128 bytes, or one Unraid would
 change between its editor and the container: two spaces in a row, a space at either end, a tab or line break, or an
 `&`-code such as `&amp;` (Unraid collapses the first and decodes the last when it recreates the container, so the
 password would stop working at the next update).

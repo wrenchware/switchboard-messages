@@ -85,8 +85,7 @@ internal static class ChromeArguments
 /// environment variable for it, so nothing the container is started with can point the check at another file (only the harness, through <see cref="LinuxServerOptions.ChromePolicyGiven"/>).
 /// <para>
 /// What the policy can and cannot do. <c>URLBlocklist</c> and <c>URLAllowlist</c> govern NAVIGATIONS (a page, a frame), by the most specific matching filter: the allow list names only the hosts the
-/// sign-in and Messages for web's configuration page need, plus <c>messages.google.com/web/config</c> by path against a block of the rest of that host, and Facebook's and Instagram's own sites for their
-/// sign-ins (SWITCHBOARD.md 10.5) with <c>instagram.com/direct</c> blocked by path against them, so Instagram's inbox never loads (the PC's window refuses it too). They do not govern what those pages then load
+/// sign-in and Messages for web's configuration page need, plus <c>messages.google.com/web/config</c> by path against a block of the rest of that host. They do not govern what those pages then load
 /// (scripts, images, fetches follow what the pages ask for), which is why the list is short rather than <c>google.com</c> and its relatives as a whole. Developer tools, remote debugging,
 /// downloads, file dialogs, extensions, saved passwords, autofill and sync are off.
 /// </para>

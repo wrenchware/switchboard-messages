@@ -25,10 +25,8 @@ internal static class ServerCertificate
     /// The certificate with its key, made first if there is none. <paramref name="hostNames"/> (names and addresses) and the machine's name go in a new
     /// certificate's subject alternative names; an existing one is never remade to add them, because that would change its fingerprint. A certificate
     /// with no key beside it is refused rather than replaced: the owner deletes the folder to rotate, and every client pins the new fingerprint.
-    /// With <paramref name="seal"/> (the Windows server, SWITCHBOARD.md 10.7) the key file holds the PEM sealed with it (DPAPI, to the server's user), and a plain
-    /// one found there is sealed in place; without it (Linux) the key is plain PEM in the keys volume, as before.
     /// </summary>
-    public static X509Certificate2 LoadOrCreate(string dataFolder, IEnumerable<string> hostNames, Action<string> log, NativeBeeper.Core.Services.IStateProtector? seal = null)
+    public static X509Certificate2 LoadOrCreate(string dataFolder, IEnumerable<string> hostNames, Action<string> log)
     {
         var folder = Path.Combine(dataFolder, FolderName);
         var certificatePath = Path.Combine(folder, CertificateFile);
@@ -37,7 +35,7 @@ internal static class ServerCertificate
         {
             // A key with no certificate is what a start that died between the two writes leaves (the key is written first). Nobody can have pinned a
             // certificate that was never written, so both are made again.
-            Create(folder, certificatePath, keyPath, hostNames, seal);
+            Create(folder, certificatePath, keyPath, hostNames);
             log("server tls created");
         }
         else if (!File.Exists(keyPath))
@@ -45,39 +43,20 @@ internal static class ServerCertificate
             log("server tls refused reason=no_key");
             throw new InvalidDataException("The server's certificate has no key beside it. Delete the tls folder to make a new one, and pin the new fingerprint on every device.");
         }
-        var certificate = Load(certificatePath, keyPath, seal, log);
+        var certificate = Load(certificatePath, keyPath);
         log($"server tls fingerprint sha256={NetworkEndpoint.Fingerprint(certificate)}");
         return certificate;
     }
 
-    private static X509Certificate2 Load(string certificatePath, string keyPath, NativeBeeper.Core.Services.IStateProtector? seal, Action<string> log)
+    private static X509Certificate2 Load(string certificatePath, string keyPath)
     {
-        var stored = File.ReadAllBytes(keyPath);
-        string keyPem;
-        if (seal is null || stored.AsSpan().StartsWith("-----BEGIN"u8))
-        {
-            keyPem = System.Text.Encoding.UTF8.GetString(stored);
-            // A plain key where the host seals them (written before it did, or put there by hand): sealed in place now.
-            if (seal is not null)
-            {
-                WritePrivate(keyPath, seal.ProtectAsync(stored).GetAwaiter().GetResult());
-                log("server tls key sealed");
-            }
-        }
-        else
-        {
-            var opened = seal.UnprotectAsync(stored).GetAwaiter().GetResult();
-            try { keyPem = System.Text.Encoding.UTF8.GetString(opened); }
-            finally { CryptographicOperations.ZeroMemory(opened); }
-        }
-        CryptographicOperations.ZeroMemory(stored);
-        using var pem = X509Certificate2.CreateFromPem(File.ReadAllText(certificatePath), keyPem);
+        using var pem = X509Certificate2.CreateFromPemFile(certificatePath, keyPath);
         // SChannel (Windows) cannot serve TLS from a key that lives only in memory, which is what a PEM gives. Through PKCS#12 the key gets a container of its
         // own, which goes when the certificate is disposed (no PersistKeySet); off Windows the same round trip is merely harmless.
         return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
     }
 
-    private static void Create(string folder, string certificatePath, string keyPath, IEnumerable<string> hostNames, NativeBeeper.Core.Services.IStateProtector? seal)
+    private static void Create(string folder, string certificatePath, string keyPath, IEnumerable<string> hostNames)
     {
         if (OperatingSystem.IsWindows()) Directory.CreateDirectory(folder);
         else Directory.CreateDirectory(folder, PrivateFolder);
@@ -90,10 +69,8 @@ internal static class ServerCertificate
         request.CertificateExtensions.Add(AlternativeNames(hostNames));
         var now = DateTimeOffset.UtcNow;
         using var certificate = request.CreateSelfSigned(now.AddDays(-1), now.AddYears(10));
-        var keyBytes = System.Text.Encoding.UTF8.GetBytes(key.ExportPkcs8PrivateKeyPem());
-        WritePrivate(keyPath, seal is null ? keyBytes : seal.ProtectAsync(keyBytes).GetAwaiter().GetResult());
-        CryptographicOperations.ZeroMemory(keyBytes);
-        WritePrivate(certificatePath, System.Text.Encoding.UTF8.GetBytes(certificate.ExportCertificatePem()));
+        WritePrivate(keyPath, key.ExportPkcs8PrivateKeyPem());
+        WritePrivate(certificatePath, certificate.ExportCertificatePem());
     }
 
     /// <summary>The configured names and addresses and the machine's name, each once; what is neither a host name nor an address is left out.</summary>
@@ -112,13 +89,14 @@ internal static class ServerCertificate
     }
 
     // Written whole to a temporary file that only the owner can read, then moved into place.
-    private static void WritePrivate(string path, byte[] bytes)
+    private static void WritePrivate(string path, string text)
     {
         var temporary = path + ".tmp";
         var options = new FileStreamOptions { Mode = FileMode.Create, Access = FileAccess.Write, Share = FileShare.None };
         if (!OperatingSystem.IsWindows()) options.UnixCreateMode = PrivateFile;
         using (var stream = new FileStream(temporary, options))
-            stream.Write(bytes);
+        using (var writer = new StreamWriter(stream))
+            writer.Write(text);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temporary, PrivateFile);
         File.Move(temporary, path, true);
     }

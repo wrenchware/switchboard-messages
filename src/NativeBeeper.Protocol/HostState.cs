@@ -48,12 +48,9 @@ public sealed record ScopeState(string Scope, bool Connected, bool Configured, b
 /// client says in Settings that the server should be reinstalled. False (a host from before the flag, or one with no such Chrome) says nothing.</param>
 /// <param name="RemoteVoiceSignIn">This host signs Google Voice in in its own Chrome (protocol 15, <see cref="ProtocolMethods.VoiceRemoteSignInMethod"/>), shown in the client's window, on a profile of that account's own.
 /// False (a host from before the flag, or one that does not run Voice) means the client signs in as it did, or is told the host does not run Voice.</param>
-/// <param name="RemoteMessengerSignIn">This host signs Messenger in in its own Chrome (protocol 27, <see cref="ProtocolMethods.ServerSignInMethod"/>), shown in the client's window, on a throwaway profile.
-/// False (a host from before the flag, a Windows server, or a Linux server without its own Chrome) means the client signs in in its own window and hands the cookies up, as before.</param>
-/// <param name="RemoteInstagramSignIn">The same for Instagram.</param>
 public sealed record HostLimits(bool HasLocalActionOptions = false, int MaxFirstMessageLength = 0, int GroupNameMaximum = 0, int AddMaximum = 0, int BatchItemLimit = 0,
     bool GoogleAbsent = false, bool VoiceAbsent = false, bool InstagramAbsent = false, bool UnarchivesChats = false, bool FiresScheduled = false, bool RemoteGoogleSignIn = false,
-    bool QrPairing = false, bool ChromeOutOfDate = false, bool RemoteVoiceSignIn = false, bool RemoteMessengerSignIn = false, bool RemoteInstagramSignIn = false);
+    bool QrPairing = false, bool ChromeOutOfDate = false, bool RemoteVoiceSignIn = false);
 
 /// <summary>Typing, in aggregate: the flags <c>ITypingService.CanReceive</c> and <c>CanSend</c> answer, which <see cref="TypingProxy"/> reads.</summary>
 public sealed record TypingState(bool CanReceive = false, bool CanSend = false);

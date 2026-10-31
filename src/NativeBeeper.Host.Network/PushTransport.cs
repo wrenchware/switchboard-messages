@@ -11,9 +11,6 @@ namespace NativeBeeper.Host.Network;
 /// <summary>What became of one push: Firebase took it, Firebase says the token is gone for good (its registration is forgotten), or it failed this time.</summary>
 public enum PushOutcome { Sent, Gone, Failed }
 
-/// <summary>What became of one push, with Google's HTTP status when it answered (0 when nothing came back), for the health the server's page shows.</summary>
-public readonly record struct PushResult(PushOutcome Outcome, int Status = 0);
-
 /// <summary>How a sealed push reaches a phone: Firebase on a server set up with the owner's project; the sample server writes them down instead.</summary>
 public interface IPushTransport
 {
@@ -25,9 +22,6 @@ public interface IPushTransport
     /// </summary>
     Task<PushOutcome> SendSyncAsync(string token, string sealedPush, bool urgent = false, CancellationToken cancellationToken = default) =>
         SendAsync(token, sealedPush, urgent, cancellationToken);
-    /// <summary><see cref="SendAsync"/> or, for a <paramref name="sync"/>, <see cref="SendSyncAsync"/>, with Google's status where the transport has one.</summary>
-    async Task<PushResult> SendWithStatusAsync(string token, string sealedPush, bool urgent, bool sync, CancellationToken cancellationToken = default) =>
-        new(await (sync ? SendSyncAsync(token, sealedPush, urgent, cancellationToken) : SendAsync(token, sealedPush, urgent, cancellationToken)).ConfigureAwait(false));
 }
 
 /// <summary>A server's pushes: what it offers phones, and how it sends to them.</summary>
@@ -36,14 +30,8 @@ public sealed record PushSetup(PushOffer Offer, IPushTransport Transport);
 /// <summary>Why two files are not a Firebase setup: not the Android app's settings, not a service account key, from two projects, or with no app for Messages in it.</summary>
 public enum PushProblem { None, NotAppSettings, NotServiceAccount, ProjectsDiffer, NoApp }
 
-/// <summary>
-/// What Google said when the server tried the key with a send that is checked and not delivered (Cloud Messaging's <c>validate_only</c>): it may send; it refused the
-/// key itself (no access token); Cloud Messaging's API is turned off for the project; the key's account is not allowed to send; or Google could not be asked just now.
-/// </summary>
-public enum PushKeyCheck { Accepted, Refused, Unreachable, ApiDisabled, NotAllowed }
-
-/// <summary>Which Firebase file a dropped file is: the Android app's settings, a service account's private key, or neither.</summary>
-public enum FirebaseFileKind { Unknown, AppSettings, ServiceAccount }
+/// <summary>What Google said of a service account key when the server asked it for an access token: took it, refused it, or could not be asked just now.</summary>
+public enum PushKeyCheck { Accepted, Refused, Unreachable }
 
 /// <summary>
 /// Firebase Cloud Messaging's HTTP v1 API, as the owner's own project (SWITCHBOARD.md Decisions, 2026-10-15: no relay). Set up by two files the owner puts in
@@ -134,79 +122,19 @@ public sealed class FirebaseTransport : IPushTransport, IDisposable
     private static bool Unreadable(Exception failure) => failure is JsonException or InvalidOperationException or NullReferenceException or CryptographicException
         or ArgumentException or FormatException or IndexOutOfRangeException;
 
-    /// <summary>
-    /// Which Firebase file <paramref name="text"/> is, and the project it names: google-services.json (<c>project_info</c> and its <c>client</c> list) or a service
-    /// account key (<c>type</c> service_account, or a <c>private_key</c>, with its <c>project_id</c>). Anything else, or a project id that is not one, is
-    /// <see cref="FirebaseFileKind.Unknown"/>. Nothing of the key is read here but its project.
-    /// </summary>
-    public static (FirebaseFileKind Kind, string? Project) Classify(string text)
-    {
-        try
-        {
-            if (JsonNode.Parse(text) is not JsonObject json) return (FirebaseFileKind.Unknown, null);
-            if (json["project_info"] is JsonObject info && json["client"] is JsonArray)
-                return (FirebaseFileKind.AppSettings, ProjectWord(info["project_id"]));
-            if (json["type"] is JsonValue type && type.TryGetValue<string>(out var kind) && kind == "service_account" || json["private_key"] is JsonValue)
-                return (FirebaseFileKind.ServiceAccount, ProjectWord(json["project_id"]));
-        }
-        catch (Exception failure) when (failure is JsonException or InvalidOperationException or FormatException) { }
-        return (FirebaseFileKind.Unknown, null);
-    }
-
-    // A project id as Google makes them (6 to 30 lowercase letters, digits and hyphens), so one put into a link or the page is nothing else.
-    private static string? ProjectWord(JsonNode? node) =>
-        node is JsonValue value && value.TryGetValue<string>(out var id) && id.Length is >= 4 and <= 64 && id.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-') ? id : null;
-
-    /// <summary>The topic the key is tried against: nothing subscribes to it, and a <c>validate_only</c> send delivers nothing anyway.</summary>
-    internal const string CheckTopic = "messages-server-check";
-
-    /// <summary>
-    /// Tries the key as a push would go, without sending one: an access token from Google, then Cloud Messaging's <c>validate_only</c> send to <see cref="CheckTopic"/>,
-    /// which proves the API is on for the project and the key's account may send. Nothing reaches a phone. Logged as
-    /// <c>push check outcome=accepted|key_refused|api_disabled|not_allowed|unreachable status=</c>.
-    /// </summary>
+    /// <summary>Asks Google for an access token with the key, as every push does first: whether it takes the key. Nothing is sent to a phone.</summary>
     public async Task<PushKeyCheck> CheckAsync(CancellationToken cancellationToken = default)
     {
-        var (check, status) = await CheckCoreAsync(cancellationToken).ConfigureAwait(false);
-        log($"push check outcome={check switch { PushKeyCheck.Accepted => "accepted", PushKeyCheck.Refused => "key_refused", PushKeyCheck.ApiDisabled => "api_disabled", PushKeyCheck.NotAllowed => "not_allowed", _ => "unreachable" }} status={status}");
-        return check;
-    }
-
-    private async Task<(PushKeyCheck, int)> CheckCoreAsync(CancellationToken cancellationToken)
-    {
-        string bearer;
-        try { bearer = await AccessTokenAsync(cancellationToken).ConfigureAwait(false); }
-        // Google answers a key it does not know, or one deleted or disabled, with a 400 or 401 (invalid_grant); anything else is no answer about the key.
-        catch (TokenRefusedException refused) when (refused.Status is 400 or 401 or 403) { return (PushKeyCheck.Refused, refused.Status); }
-        // The asker gave up (the page closed, the server stopping): no answer, and nothing to keep on the strength of it.
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException) { return (PushKeyCheck.Unreachable, 0); }
-        var body = new JsonObject
-        {
-            ["validate_only"] = true,
-            ["message"] = new JsonObject { ["topic"] = CheckTopic, ["data"] = new JsonObject { ["p"] = "check" }, ["android"] = new JsonObject { ["priority"] = "NORMAL" } },
-        };
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"https://fcm.googleapis.com/v1/projects/{projectId}/messages:send")
-        {
-            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"),
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
         try
         {
-            using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            var status = (int)response.StatusCode;
-            if (response.IsSuccessStatusCode) return (PushKeyCheck.Accepted, status);
-            var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == HttpStatusCode.Unauthorized) { accessToken = null; return (PushKeyCheck.Refused, status); }
-            if (response.StatusCode != HttpStatusCode.Forbidden) return (PushKeyCheck.Unreachable, status);
-            // Google says which: the API turned off for the project (its ErrorInfo reason SERVICE_DISABLED, and "has not been used in project ... or it is
-            // disabled" in its words), or the account lacking cloudmessaging.messages.create (PERMISSION_DENIED, IAM_PERMISSION_DENIED).
-            var disabled = text.Contains("SERVICE_DISABLED", StringComparison.Ordinal) || text.Contains("API_DISABLED", StringComparison.Ordinal)
-                || text.Contains("has not been used", StringComparison.OrdinalIgnoreCase) || text.Contains("it is disabled", StringComparison.OrdinalIgnoreCase);
-            return (disabled ? PushKeyCheck.ApiDisabled : PushKeyCheck.NotAllowed, status);
+            await AccessTokenAsync(cancellationToken).ConfigureAwait(false);
+            return PushKeyCheck.Accepted;
         }
+        // Google answers a key it does not know, or one deleted or disabled, with a 400 or 401 (invalid_grant); anything else is no answer about the key.
+        catch (TokenRefusedException refused) when (refused.Status is 400 or 401 or 403) { return PushKeyCheck.Refused; }
+        // The asker gave up (the page closed, the server stopping): no answer, and nothing to keep on the strength of it.
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-        catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException) { return (PushKeyCheck.Unreachable, 0); }
+        catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException) { return PushKeyCheck.Unreachable; }
     }
 
     private sealed class TokenRefusedException(int status) : InvalidOperationException($"token status {status}")
@@ -226,14 +154,11 @@ public sealed class FirebaseTransport : IPushTransport, IDisposable
         return new PushOffer(true, (string)project["project_id"]!, (string)project["project_number"]!, apiKey, apps);
     }
 
-    public async Task<PushOutcome> SendAsync(string token, string sealedPush, bool urgent, CancellationToken cancellationToken = default) =>
-        (await SendCoreAsync(token, sealedPush, urgent, sync: false, cancellationToken).ConfigureAwait(false)).Outcome;
+    public Task<PushOutcome> SendAsync(string token, string sealedPush, bool urgent, CancellationToken cancellationToken = default) =>
+        SendCoreAsync(token, sealedPush, urgent, sync: false, cancellationToken);
 
-    public async Task<PushOutcome> SendSyncAsync(string token, string sealedPush, bool urgent = false, CancellationToken cancellationToken = default) =>
-        (await SendCoreAsync(token, sealedPush, urgent, sync: true, cancellationToken).ConfigureAwait(false)).Outcome;
-
-    public Task<PushResult> SendWithStatusAsync(string token, string sealedPush, bool urgent, bool sync, CancellationToken cancellationToken = default) =>
-        SendCoreAsync(token, sealedPush, urgent, sync, cancellationToken);
+    public Task<PushOutcome> SendSyncAsync(string token, string sealedPush, bool urgent = false, CancellationToken cancellationToken = default) =>
+        SendCoreAsync(token, sealedPush, urgent, sync: true, cancellationToken);
 
     // One collapse key for sync only: the latest hint causes a replay of every missed conversation. Collapsing normal read withdrawals or incoming
     // notifications too would lose the other chats' notification removals or words; a long PC send batch must not fill FCM's 100-message offline queue.
@@ -246,14 +171,14 @@ public sealed class FirebaseTransport : IPushTransport, IDisposable
         } };
     }
 
-    private async Task<PushResult> SendCoreAsync(string token, string sealedPush, bool urgent, bool sync, CancellationToken cancellationToken)
+    private async Task<PushOutcome> SendCoreAsync(string token, string sealedPush, bool urgent, bool sync, CancellationToken cancellationToken)
     {
         string bearer;
         try { bearer = await AccessTokenAsync(cancellationToken).ConfigureAwait(false); }
         catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
             log($"push token failed type={failure.GetType().Name}");
-            return new(PushOutcome.Failed, failure is TokenRefusedException refused ? refused.Status : 0);
+            return PushOutcome.Failed;
         }
         var body = MessageBody(token, sealedPush, urgent, sync);
         using var request = new HttpRequestMessage(HttpMethod.Post, $"https://fcm.googleapis.com/v1/projects/{projectId}/messages:send")
@@ -264,7 +189,7 @@ public sealed class FirebaseTransport : IPushTransport, IDisposable
         try
         {
             using var response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (response.IsSuccessStatusCode) return new(PushOutcome.Sent, (int)response.StatusCode);
+            if (response.IsSuccessStatusCode) return PushOutcome.Sent;
             var text = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             // The token itself is no longer good (the app was uninstalled, or its data cleared): FCM says UNREGISTERED, or the token is not one.
             // SENDER_ID_MISMATCH: a token from another Firebase project (the files were replaced), which this project can never reach.
@@ -272,12 +197,12 @@ public sealed class FirebaseTransport : IPushTransport, IDisposable
                 (response.StatusCode == HttpStatusCode.BadRequest && text.Contains("registration token", StringComparison.OrdinalIgnoreCase));
             if (response.StatusCode == HttpStatusCode.Unauthorized) accessToken = null;
             log($"push refused status={(int)response.StatusCode} gone={gone}");
-            return new(gone ? PushOutcome.Gone : PushOutcome.Failed, (int)response.StatusCode);
+            return gone ? PushOutcome.Gone : PushOutcome.Failed;
         }
         catch (Exception failure) when (failure is HttpRequestException or TaskCanceledException)
         {
             log($"push failed type={failure.GetType().Name}");
-            return new(PushOutcome.Failed);
+            return PushOutcome.Failed;
         }
     }
 

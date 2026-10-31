@@ -977,48 +977,6 @@ public sealed class SharedStateStore : ISharedState
         transaction.Commit();
     }
 
-    /// <summary>A live row as the file keeps it (its value still sealed), with the protocol version its category came in.</summary>
-    internal sealed record SealedRow(string Key, byte[] Sealed, int Since);
-
-    /// <summary>
-    /// Every live row of a shared state file (tombstones are left: the file a restore makes is a new epoch, which every client takes whole) and its retired ids, read in one
-    /// transaction without changing anything, for the server's backup (stage 10). Nothing when the file is not there.
-    /// </summary>
-    internal static (IReadOnlyList<SealedRow> Rows, IReadOnlyList<(string Id, long At)> Retired) ReadSealed(string file, CancellationToken cancellationToken = default)
-    {
-        if (!File.Exists(file)) return ([], []);
-        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = file, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString());
-        connection.Open();
-        using var transaction = connection.BeginTransaction();
-        var rows = Query(connection, "SELECT key, payload, since FROM rows WHERE deleted = 0 AND payload IS NOT NULL ORDER BY key",
-            r => new SealedRow(r.GetString(0), (byte[])r[1], r.GetInt32(2)), transaction);
-        cancellationToken.ThrowIfCancellationRequested();
-        var retired = Query(connection, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'retired'", r => 1, transaction).Count == 0 ? []
-            : Query(connection, "SELECT id, at FROM retired", r => (r.GetString(0), r.GetInt64(1)), transaction);
-        return (rows, retired);
-    }
-
-    /// <summary>
-    /// Makes a shared state file holding <paramref name="rows"/> (sealed by the caller, with the server's own protector), all under one first commit, and
-    /// <paramref name="retired"/>, under a new epoch (<see cref="CreateFresh"/>), replacing whatever is at <paramref name="file"/>. What a restore puts in place.
-    /// </summary>
-    internal static void CreateRestored(string file, IEnumerable<SealedRow> rows, Func<SealedRow, int> size, IEnumerable<(string Id, long At)> retired, DateTimeOffset now)
-    {
-        foreach (var leftover in new[] { file + "-wal", file + "-shm", file + "-journal" }) if (File.Exists(leftover)) File.Delete(leftover);
-        CreateFresh(file, retired);
-        using var connection = OpenFile(file, null);
-        using var transaction = connection.BeginTransaction();
-        var any = false;
-        foreach (var row in rows)
-        {
-            Execute(connection, transaction, "INSERT INTO rows(key, payload, rev, deleted, size, since, updated) VALUES($key, $payload, 1, 0, $size, $since, $now)",
-                ("$key", row.Key), ("$payload", row.Sealed), ("$size", size(row)), ("$since", row.Since), ("$now", now.ToUnixTimeMilliseconds()));
-            any = true;
-        }
-        if (any) Execute(connection, transaction, "UPDATE meta SET rev = 1");
-        transaction.Commit();
-    }
-
     // ---- The file ----
 
     private SqliteConnection Open() => OpenFile(path, log);

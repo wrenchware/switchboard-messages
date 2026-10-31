@@ -15,11 +15,9 @@
 // server's own page shows, in one "tailnet page" line the server keeps in memory for the page and never logs (page.go). Tailscale's own
 // log is off (init): nothing is uploaded, and its files in the state folder stay empty. The door ends when its standard
 // input ends (the server stopping),
-// and on Linux with the server however it ends (parentwatch_linux.go); on Windows the server keeps it in its helpers' job,
-// which ends it with the server, and its node's keys are sealed to the user (store_windows.go). With --authkey-stdin the first line of that input
+// and on Linux with the server however it ends (parentwatch_linux.go). With --authkey-stdin the first line of that input
 // is a Tailscale auth key for a headless sign-in (MESSAGES_TAILNET_AUTHKEY, readAuthKey), so the key is in no argument
-// and no environment. A later "logout" line signs the node out and ends the door with forgetCode (commands). A node that
-// Tailscale signs out while it runs asks for a new sign-in link by itself (needsLink).
+// and no environment.
 package main
 
 import (
@@ -133,13 +131,7 @@ func run(state, socket, hostname string, port int, authKey string, input io.Read
 	discard := func(string, ...any) {}
 	// The auth key, when the server was given one, is used only while the node has no identity of its own yet; a node
 	// already signed in ignores it. A tagged key makes a tagged node, which turns the same-user check off (relay.go).
-	// On Windows the node's keys are sealed to the user (store_windows.go); elsewhere tsnet's own file in the state folder.
-	store, err := newStateStore(state)
-	if err != nil {
-		say("tailnet start failed reason=state")
-		return 1
-	}
-	server := &tsnet.Server{Dir: state, Store: store, Hostname: hostname, AuthKey: authKey, Logf: discard, UserLogf: discard}
+	server := &tsnet.Server{Dir: state, Hostname: hostname, AuthKey: authKey, Logf: discard, UserLogf: discard}
 	if authKey != "" {
 		say("tailnet authkey=given")
 	}
@@ -172,21 +164,9 @@ func run(state, socket, hostname string, port int, authKey string, input io.Read
 		defer watching.Done()
 		door.watch(ctx)
 	}()
-	// The server stops this process by ending its input (or, on Linux, by ending: parentwatch_linux.go). A "logout" line on it is "Use another
-	// Tailscale account" on the server's page: the node signs out of Tailscale, and this process ends with forgetCode so the server forgets its state
-	// and starts it afresh, which asks for a new sign-in link.
-	var forgetting atomic.Bool
+	// The server stops this process by ending its input (or, on Linux, by ending: parentwatch_linux.go).
 	go func() {
-		commands(input, func() {
-			forgetting.Store(true)
-			logoutCtx, done := context.WithTimeout(ctx, 15*time.Second)
-			defer done()
-			if err := client.Logout(logoutCtx); err != nil {
-				say("tailnet logout failed reason=logout")
-			} else {
-				say("tailnet logged_out")
-			}
-		})
+		io.Copy(io.Discard, input)
 		cancel()
 		listener.Close()
 	}()
@@ -194,50 +174,8 @@ func run(state, socket, hostname string, port int, authKey string, input io.Read
 	cancel()
 	watching.Wait()
 	server.Close()
-	if forgetting.Load() {
-		say("tailnet stopped reason=forget")
-		return forgetCode
-	}
 	say("tailnet stopped")
 	return 0
-}
-
-// forgetCode is how the door ends after "logout": the server then removes its state folder and starts it again at once (TailnetDoor.cs).
-const forgetCode = 3
-
-// commands reads the server's lines after the auth key until the input ends. "logout" signs the node out (then the input is no longer read: the door is
-// ending); any other line is ignored, so a later server can say more without an older door misreading it.
-func commands(input io.Reader, logout func()) {
-	lines := bufio.NewReaderSize(input, maxKeyLine)
-	for {
-		line, err := lines.ReadSlice('\n')
-		if err == bufio.ErrBufferFull {
-			for err == bufio.ErrBufferFull {
-				_, err = lines.ReadSlice('\n')
-			}
-			if err != nil {
-				return
-			}
-			continue
-		}
-		if err != nil {
-			return
-		}
-		if strings.TrimRight(string(line), "\r\n") == "logout" {
-			logout()
-			return
-		}
-	}
-}
-
-// loginRetry is how often a node signed out with no sign-in link asks Tailscale for one again.
-const loginRetry = time.Minute
-
-// needsLink says whether to ask Tailscale for a sign-in link now: the node is signed out (its key expired, it was logged out, or a key Tailscale refused
-// was given up on) and has no link to show, and it has not asked within loginRetry. tsnet asks only when it starts, so without this a node signed out
-// while running would show nothing to open until a restart. A node still trying its auth key is left to it (keyGrace).
-func needsLink(state, authURL string, tryingKey bool, lastAsked, now time.Time) bool {
-	return state == "NeedsLogin" && authURL == "" && !tryingKey && now.Sub(lastAsked) >= loginRetry
 }
 
 // keyGrace is how long a node given an auth key may sit signed out with no sign-in link before the key counts as
@@ -361,8 +299,8 @@ func splice(a, b net.Conn) {
 func (d *door) watch(ctx context.Context) {
 	var lastState, lastURL, lastPaths, lastPage string
 	lastCounts := "relayed=0 refused=0"
-	var urlSaid, lockSaid, expirySaid, countsSaid, linkAsked time.Time
-	started, keyGivenUp, wasRunning := time.Now(), false, false
+	var urlSaid, lockSaid, expirySaid, countsSaid time.Time
+	started, keyGivenUp := time.Now(), false
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
@@ -383,19 +321,6 @@ func (d *door) watch(ctx context.Context) {
 				} else if err := d.client.StartLoginInteractive(ctx); err != nil {
 					say("tailnet login failed reason=interactive")
 				}
-				linkAsked = time.Now()
-			}
-			// Signed out while running (the key expired, or the machine was logged out in Tailscale): a new link, so the page offers "Sign in again".
-			if needsLink(status.BackendState, status.AuthURL, d.keyed && !keyGivenUp, linkAsked, time.Now()) {
-				linkAsked = time.Now()
-				if err := d.client.StartLoginInteractive(ctx); err != nil {
-					say("tailnet login failed reason=interactive")
-				} else {
-					say("tailnet login asked reason=signed_out")
-				}
-			}
-			if status.BackendState == "Running" {
-				wasRunning = true
 			}
 			if status.Self != nil && status.BackendState == "Running" {
 				self := identity{user: int64(status.Self.UserID), tagged: status.Self.Tags != nil && status.Self.Tags.Len() > 0}
@@ -436,12 +361,7 @@ func (d *door) watch(ctx context.Context) {
 				}
 			}
 			// What the server's page shows, whenever any of it changes (page.go).
-			if status.BackendState == "NeedsMachineAuth" {
-				if full, err := d.status(ctx, true); err == nil {
-					seen = full
-				}
-			}
-			if page := d.view(ctx, seen, d.port, wasRunning).line(); page != "" && page != lastPage {
+			if page := d.view(ctx, seen, d.port).line(); page != "" && page != lastPage {
 				say(page)
 				lastPage = page
 			}

@@ -53,16 +53,6 @@ internal sealed class DeviceRegistry
         this.generationPath = generationPath; this.generation = generation;
     }
 
-    /// <summary>The record of the restore this server was made from, when it was (stage 10): an unknown token may then be a device from after the backup.</summary>
-    internal NativeBeeper.Host.Backup.RestoredMark? Restored { get; set; }
-
-    /// <summary>
-    /// Whether a token no device holds is answered as a device from before a restore (<see cref="NativeBeeper.Host.Backup.RestoredMark"/>): the server was restored from a
-    /// backup, recently enough, and the token is not one removed since.
-    /// </summary>
-    public bool RefusesAsRestored(byte[]? presented) =>
-        presented is { Length: ClientToken.Length } && Restored is { } mark && mark.RefusesAsRestored(SHA256.HashData(presented), time.GetUtcNow());
-
     /// <summary>The generation of the list last read or written.</summary>
     public long Generation => Interlocked.Read(ref generation);
 
@@ -261,8 +251,6 @@ internal sealed class DeviceRegistry
             throw;
         }
         log($"server device revoked id={id}");
-        // Told from now on that it was removed, not that the server was restored.
-        if (Restored is { } mark) await mark.NoteRevokedAsync(removed.Hash).ConfigureAwait(false);
         Revoked?.Invoke(id);
         return true;
     }

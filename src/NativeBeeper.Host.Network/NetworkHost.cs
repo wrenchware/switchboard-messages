@@ -121,12 +121,6 @@ internal sealed class NetworkHost : IAsyncDisposable
     /// <summary>The server's pushes as they are now, for the harness; null on a host started without them.</summary>
     internal PushSwitch? Pushes { get; private set; }
 
-    /// <summary>How the server's pushes are doing (10.9), for the harness; null on a host started without them.</summary>
-    internal PushHealth? PushHealth { get; private set; }
-
-    /// <summary>Each device's push address and reports of a missing app, for the harness; null on a host started without them.</summary>
-    internal PushRegistry? PushRegistrations { get; private set; }
-
     /// <summary>Raised with a device's id once it has been removed.</summary>
     internal event Action<string>? DeviceRevoked { add => devices.Revoked += value; remove => devices.Revoked -= value; }
 
@@ -147,22 +141,9 @@ internal sealed class NetworkHost : IAsyncDisposable
         this.options = options; log = options.Log; this.serve = serve; this.version = version; this.certificate = certificate; this.devices = devices; this.flush = flush;
         pairing = new PairingCodes(options.Time, log, options.ShowCode);
         joins = new JoinRequests(options.Time, log, Path.Combine(options.KeysFolder ?? options.DataFolder, "join-requests-paused"));
-        var keys = options.KeysFolder ?? options.DataFolder;
-        // The first run (SWITCHBOARD.md 10.4): with no password where the server was installed, the page sets one up; its setup code is shown as a pairing code is.
-        var setup = options.FirstRun
-            ? new ServerPageSetup(options.ShowCode, options.Tailnet is { Enabled: true } ? new TailscaleAdmin(keys, options.Protector, log, options.TailscaleHandler) : null)
-            : null;
-        page = ServerPage.Create(options.PagePassword, keys, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
-            options.Tailnet, pushes, history, options.Backups, setup);
-        // The Windows server on its own PC (SWITCHBOARD.md 10.7, ServerPage.Desktop.cs).
-        if (page is not null)
-        {
-            page.OnceSignIn = options.OnceSignIn;
-            page.DesktopTrust = options.DesktopTrust;
-            page.DesktopSignIn = options.DesktopSignIn;
-        }
+        page = ServerPage.Create(options.PagePassword, options.KeysFolder ?? options.DataFolder, devices, pairing, joins, () => Fingerprint, admin, logs, options.Time, log,
+            options.Tailnet, pushes, history);
         devices.Revoked += EndDevice;
-        devices.Restored = options.Restored;
         // Real time, whatever clock the codes expire by: the check itself reads that clock (a test calls CheckPairing after moving it).
         pairingCheck = new Timer(_ => CheckPairing(), null, PairingCheckEvery, PairingCheckEvery);
     }
@@ -236,15 +217,13 @@ internal sealed class NetworkHost : IAsyncDisposable
         var pushes = await PushRegistry.LoadAsync(options.DataFolder, options.Protector, options.Log, devices.Has).ConfigureAwait(false);
         // Pushes as they are now: on from the start with the folder's files, or turned on later from the server's page.
         var pushSwitch = new PushSwitch(options.Push, options.PushFolder, options.Log, options.PushHandler);
-        // How they are doing, for the page's card and push.status (10.9).
-        var health = new PushHealth(options.Time, options.Log);
         var presence = new DevicePresence();
         var host = await StartAsync(admitted =>
         {
             var dispatcher = new ProtocolDispatcher(admitted.Channel, services with
             {
                 Devices = admitted.Devices,
-                Push = new DevicePush(() => pushSwitch.Current, pushes, admitted.DeviceId, health, () => devices.List(null), options.Time),
+                Push = new DevicePush(() => pushSwitch.Current, pushes, admitted.DeviceId),
                 ClientState = presence.For(admitted.DeviceId, services.ClientState),
             }, version, served, options.Log, journal);
             admitted.BeginDraining = dispatcher.BeginDraining;
@@ -253,45 +232,23 @@ internal sealed class NetworkHost : IAsyncDisposable
             var run = dispatcher.Start();
             _ = run.ContinueWith(_ => presence.Closed(dispatcher), TaskScheduler.Default);
             return run;
-        }, version, options, cancellationToken, served.Flush, services.Admin, services.Logs, devices, new ServerPage.Pushes(pushSwitch, pushes, health), services.WholeHistory).ConfigureAwait(false);
-        host.DeviceRevoked += device =>
-        {
-            _ = pushes.RemoveAsync(device, "device_removed");
-            health.Forget(device);
-        };
+        }, version, options, cancellationToken, served.Flush, services.Admin, services.Logs, devices, new ServerPage.Pushes(pushSwitch, pushes), services.WholeHistory).ConfigureAwait(false);
+        host.DeviceRevoked += device => _ = pushes.RemoveAsync(device, "device_removed");
         host.Pushes = pushSwitch;
-        host.PushHealth = health;
-        host.PushRegistrations = pushes;
-        // Signing in on the page runs through the same sign-ins as every connection's (services.SignIns).
-        host.page?.OfferSignIn(services);
-        // Another project's files: every phone's address was the old project's, so each is forgotten and signs up again (at once when it is open: below).
+        // Another project's files: every phone's address was the old project's, so each is forgotten and signs up again at its next connection.
         pushSwitch.ProjectChanged += changedAt =>
         {
             foreach (var registration in pushes.All().Where(registration => registration.At < changedAt)) _ = pushes.RemoveAsync(registration.DeviceId, "project_changed", registration.Token);
-        };
-        // Pushes turned on, or the files replaced (10.9): the reports of a missing app were about the old files, and every open phone of 27 or later is told to ask
-        // for the offer again, so it signs up now rather than at its next connection.
-        pushSwitch.Installed += () =>
-        {
-            _ = pushes.ClearMissingAsync();
-            if (services.Events is { } announced)
-            {
-                announced.AppendSignal(new AccountSignal(AccountSignals.Push));
-                options.Log("push announced");
-            }
         };
         if (services.Events is { } events && services.Chats is { } chats && services.Sender is { } sender)
         {
             // Started once pushes are on, at the start or when the page turns them on, and sending through the switch, so new files take over at once.
             var started = 0;
-            PushNotifier? notifier = null;
             void Start()
             {
-                if (Interlocked.Exchange(ref started, 1) == 0) host.Own(notifier = new PushNotifier(events, chats, sender, pushes, pushSwitch, presence.InFront, options.Log, services.SharedState,
-                    quietFor: presence.AtAnotherDevice, health: health));
+                if (Interlocked.Exchange(ref started, 1) == 0) host.Own(new PushNotifier(events, chats, sender, pushes, pushSwitch, presence.InFront, options.Log, services.SharedState,
+                    quietFor: presence.AtAnotherDevice));
             }
-            // Two days without a good backup (stage 10): every phone signed up for notifications is told; with none, nobody is, and the backup asks again later.
-            if (options.Backups?.Service is { } backup) backup.StaleNotice = _ => Task.FromResult(notifier?.BackupStale() > 0);
             pushSwitch.TurnedOn += Start;
             if (pushSwitch.Current is not null) Start();
         }
@@ -309,7 +266,7 @@ internal sealed class NetworkHost : IAsyncDisposable
         if (!IPAddress.TryParse(options.BindAddress, out var address)) throw new ArgumentException("The bind address is not an IP address.", nameof(options));
         Directory.CreateDirectory(options.DataFolder);
         var devices = loaded ?? await DeviceRegistry.LoadAsync(options.DataFolder, options.Protector, options.Time, options.Log, options.KeysFolder).ConfigureAwait(false);
-        var certificate = ServerCertificate.LoadOrCreate(options.KeysFolder ?? options.DataFolder, options.HostNames, options.Log, options.SealTlsKey ? options.Protector : null);
+        var certificate = ServerCertificate.LoadOrCreate(options.KeysFolder ?? options.DataFolder, options.HostNames, options.Log);
         var host = new NetworkHost(options, serve, version, certificate, devices, flush, admin, logs, pushes, history);
         try
         {
@@ -457,12 +414,6 @@ internal sealed class NetworkHost : IAsyncDisposable
     private async Task HandleAsync(HttpContext context)
     {
         var request = context.Request;
-        // The page's own socket for signing in on it (SWITCHBOARD.md 10.6), to the home network only as the page is; the page itself asks for its cookie, its token and its origin.
-        if (page is not null && string.Equals(request.Path.Value, ServerPage.SignInSocketPath, StringComparison.Ordinal) && FromTrustedNetwork(context))
-        {
-            await page.SignInSocketAsync(context, draining, () => Ticket(context)?.Leave(), stopping.Token).ConfigureAwait(false);
-            return;
-        }
         // The server's own page, when its owner set it a password (ServerPage): its few paths only, to the home network only, each answer closing its connection.
         if (page is not null && ServerPage.Serves(request.Path.Value) && FromTrustedNetwork(context))
         {
@@ -493,13 +444,10 @@ internal sealed class NetworkHost : IAsyncDisposable
         if (authorization.Count > 0)
         {
             // A token, and only a token: a request that also carries a code is judged by its token alone.
-            var presentedToken = authorization.Count == 1 ? ClientToken.Presented(authorization[0]) : null;
-            device = presentedToken is null ? null : devices.Authenticate(presentedToken);
+            device = authorization.Count == 1 ? devices.Authenticate(ClientToken.Presented(authorization[0])) : null;
             if (device is null)
             {
-                // A server restored from a backup (stage 10) says so to a token it does not know, so the device can say to ask to join again (NetworkEndpoint).
-                if (devices.RefusesAsRestored(presentedToken)) await RefuseAsync(context, StatusCodes.Status401Unauthorized, "restored", NetworkPairing.RefusalRestored).ConfigureAwait(false);
-                else await RefuseAsync(context, StatusCodes.Status401Unauthorized, "token").ConfigureAwait(false);
+                await RefuseAsync(context, StatusCodes.Status401Unauthorized, "token").ConfigureAwait(false);
                 return;
             }
         }
@@ -523,7 +471,7 @@ internal sealed class NetworkHost : IAsyncDisposable
                 await RefuseAsync(context, StatusCodes.Status403Forbidden, "join_not_home").ConfigureAwait(false);
                 return;
             }
-            if (devices.Count == 0 && (page is null || page.SettingUp))
+            if (devices.Count == 0 && page is null)
             {
                 await RefuseAsync(context, StatusCodes.Status409Conflict, "join_no_approver").ConfigureAwait(false);
                 return;
@@ -577,7 +525,7 @@ internal sealed class NetworkHost : IAsyncDisposable
 
     private async Task ServeDeviceAsync(string device, WebSocketFrameChannel channel, long? arrived, bool relayed)
     {
-        var admitted = new Admitted(device, channel, new DeviceView(devices, device, pairing, joins, log, address => JoinLinkFor(address))) { Serial = Interlocked.Increment(ref admissions) };
+        var admitted = new Admitted(device, channel, new DeviceView(devices, device, pairing, joins, log)) { Serial = Interlocked.Increment(ref admissions) };
         // Seen before serve starts the dispatcher: from then on the device's requests are answered on other threads while this one carries on below, so a
         // devices.list among its first could list the device asking as never connected (the harness caught it under load, 2026-10-16).
         devices.Seen(device);
@@ -632,9 +580,9 @@ internal sealed class NetworkHost : IAsyncDisposable
 
     private static bool Relayed(HttpContext context) => context.Features.Get<IConnectionItemsFeature>()?.Items.ContainsKey(RelayKey) == true;
     // The private relay socket authenticates the tailnet path before TLS; an address or HTTP header cannot do that.
-    private bool FromTrustedNetwork(HttpContext context) => Relayed(context) || (options.HomeCheck ?? ServerPage.FromHome)(context.Connection.RemoteIpAddress);
+    private static bool FromTrustedNetwork(HttpContext context) => Relayed(context) || ServerPage.FromHome(context.Connection.RemoteIpAddress);
 
-    private async Task RefuseAsync(HttpContext context, int status, string reason, string? word = null)
+    private async Task RefuseAsync(HttpContext context, int status, string reason)
     {
         // The first, then one in a hundred, as the pipe's door: a peer that keeps knocking does not fill the log. The count is the total either way.
         var count = Interlocked.Increment(ref refused);
@@ -642,7 +590,6 @@ internal sealed class NetworkHost : IAsyncDisposable
         var response = context.Response;
         response.StatusCode = status;
         if (status == StatusCodes.Status401Unauthorized) response.Headers.WWWAuthenticate = "Bearer";
-        if (word is not null) response.Headers[NetworkPairing.RefusalHeader] = word;
         // One answer per connection: a refused peer cannot keep its place in the door by asking again on it.
         response.Headers.Connection = "close";
         response.ContentLength = 0;
@@ -696,37 +643,11 @@ internal sealed class NetworkHost : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await StopAsync(TimeSpan.Zero).ConfigureAwait(false);
 
-    // A new pairing code as the join link and the PC's line (protocol 27, SWITCHBOARD.md 10.4): the address the owner's PC reaches the server by (or the first name the
-    // server was given), its tailnet name and Tailscale account when its door is signed in, and its fingerprint.
-    private JoinLinkIssued JoinLinkFor(string? address)
-    {
-        address = string.IsNullOrWhiteSpace(address) ? options.HostNames.FirstOrDefault() is { Length: > 0 } named ? Port == NetworkEndpoint.DefaultPort ? named : $"{named}:{Port}" : null
-            : address.Trim();
-        var view = options.Tailnet?.Latest is { Running: true } running ? running : null;
-        var code = pairing.Issue();
-        var link = JoinLink.Build(view?.Name, address, Fingerprint, code, view is { Tagged: false } ? view.Owner : null);
-        return new(link, address is null ? null : JoinLink.Line(address, Fingerprint, code), code, (int)PairingCodes.Lifetime.TotalSeconds, Fingerprint, address, view?.Name);
-    }
-
     // One connection's devices.*: the host's list with this device marked. A device token is never an admin's (SWITCHBOARD.md's harvest rule): any device
     // may revoke (which ends this connection once the answer is written) or rename itself, and only the owner, the device paired first of those still paired
     // (DeviceRegistry.Owner), may revoke or rename another or open a code for a new one.
-    private sealed class DeviceView(DeviceRegistry devices, string current, PairingCodes pairing, JoinRequests joins, Action<string> log, Func<string?, JoinLinkIssued> joinLink)
-        : IPairedDevices
+    private sealed class DeviceView(DeviceRegistry devices, string current, PairingCodes pairing, JoinRequests joins, Action<string> log) : IPairedDevices
     {
-        public Task<JoinLinkIssued> JoinLinkAsync(string? address, CancellationToken cancellationToken = default)
-        {
-            if (!devices.IsOwner(current))
-            {
-                log("server pairing refused reason=not_owner");
-                throw new NativeBeeper.Core.Backend.BackendException(NativeBeeper.Core.Backend.BackendFailure.Forbidden,
-                    "Only the device paired first with this server can pair another device.");
-            }
-            // An address a person could not have typed is no address: the line and the link carry it to another device.
-            if (address is { Length: > 0 } given && (given.Length > 300 || given.Any(c => char.IsWhiteSpace(c) || c is '/' or '#' or '?' or '@'))) address = null;
-            return Task.FromResult(joinLink(address));
-        }
-
         // Asking to join (protocol 21): the requests, and answering them, are the owner's as a new code is.
         public Task<IReadOnlyList<JoinRequest>> JoinRequestsAsync(CancellationToken cancellationToken = default)
         {

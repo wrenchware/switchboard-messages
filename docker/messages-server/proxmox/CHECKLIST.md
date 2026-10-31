@@ -80,65 +80,7 @@ ls -l /root/messages-backups-test
 Wanted: "no release address", and with Google on a line about Chrome. Report the lines, and whether a backup file
 appears in the test folder after the page's backups step has been run.
 
-## 6. Messenger and Instagram signed in from the Windows app (10.5)
-
-The server's own Chrome signs Messenger and Instagram in, shown in the Windows app's window, on a throwaway profile
-that is deleted afterwards. **Facebook test account only.** Instagram is never signed in here: the owner's only
-Instagram is the real account, so its part stops at the login page.
-
-Needs: a package and a Windows build from the same commit (protocol 27), Google on in the container (the sandbox line
-in part 2 says `server google enabled browser=chrome`), and the Facebook test account signed out of the server (on the
-page, or skip part 3's Facebook step).
-
-1. On the PC, start the isolated development copy (`powershell -NoProfile -File tools\Run-DevBuild.ps1`), never the
-   installed app. In **Settings → Accounts → Messages Server → Manage…**, join this test server (**Ask to join**,
-   approve on the page). It must be the first device the server paired, since only that one signs accounts in: on a
-   server the phone joined first, Connect says "Only the device paired first with this server can sign in, sign out
-   or change its accounts." Report that sentence if you see it, then use a fresh container.
-2. In a second shell on the Proxmox host, follow the log:
-   `pct exec <id> -- journalctl -u messages-server -f -o cat | grep -E 'remote sign-in|google chrome|server sign-in'`
-3. **Cancel.** In the dev copy's **Settings → Accounts**, Messenger, **Connect**. Wanted: a window titled
-   "Sign in to Facebook" saying "This is Messages Server's own browser. Sign in to Facebook here, then choose Done.",
-   showing facebook.com's login page with an address bar, and buttons **Done** and **Cancel**. Choose **Cancel** (and
-   once more, closing the window with its X instead). Wanted: "Facebook sign-in was cancelled.",
-   `remote sign-in service=messenger outcome=cancelled reason=client`, `keys/SignIn` empty (below), and the server's
-   Google sign-in (if any) still working.
-4. **Done too early.** Connect again and choose **Done** on the login page without signing in. Wanted: the window
-   closes, Settings says "The Facebook sign-in didn't finish. Choose Connect to try again.", the log has
-   `remote sign-in service=messenger outcome=refused reason=missing_cookies`, and
-   `pct exec <id> -- ls -A /var/lib/messages-server/keys/SignIn` prints nothing.
-5. **Messenger.** Connect once more.
-   - Sign in with the Facebook test account. Answer anything Facebook asks (a code, "Was this you?" on the test
-     account's phone, "Trust this browser"). Note each prompt Facebook showed, in order.
-   - Choose **Done** only once Facebook shows its home page. The header changes to "Finishing the sign-in on Messages
-     Server…" and the window closes by itself.
-   - Wanted in Settings: "Loading the Messenger inbox…", "Connected. Turning on encrypted conversations…", then
-     "Connected. N conversations joined your chat list. Encrypted conversations are on too: …".
-   - Wanted in the log, in this order and nothing with a name, an id or a cookie:
-     ```
-     remote sign-in service=messenger outcome=started reason=none
-     remote sign-in service=messenger outcome=signed_in reason=none
-     remote sign-in service=messenger outcome=connected reason=none
-     remote sign-in service=messenger outcome=encryption reason=on
-     ```
-     with `google chrome started` lines between them (Chrome on the throwaway profile, then back on the Google
-     profile if one is kept). `reason=e2ee_...` or `reason=TimeoutException` on the last line means encryption did not
-     turn on: report it, do not press its Settings button more than once.
-   - `pct exec <id> -- ls -A /var/lib/messages-server/keys/SignIn` prints nothing (the profile is gone).
-   - In Facebook's Settings → Security and login → Where you're logged in, on the test account's phone: report what
-     the new session is called and where Facebook places it (it should be the server's address, not the PC's).
-6. **Instagram, without signing in.** Instagram, **Connect**. Wanted: "Sign in to Instagram" at Instagram's login
-   page. Do not type the real account. Click the address bar, type `instagram.com/direct/inbox/` and press Enter.
-   Wanted: Chrome's "blocked" page (the inbox never loads in the server's browser). Then **Cancel**:
-   `remote sign-in service=instagram outcome=cancelled reason=client`.
-
-If Connect opens this PC's own Facebook or Instagram window instead of the server's, the server is not offering the
-sign-in: report `pct exec <id> -- journalctl -u messages-server --no-pager -o cat | grep -E 'remote_signin refused|server google'`.
-
-Report: each step's result, Facebook's prompts and how long from Done to "Connected", the log lines, and anything in
-the window that looked wrong (a frozen picture, keys that did not type, the Done button doing nothing).
-
-## 7. Remove it
+## 6. Remove it
 
 1. On the page, remove the Facebook test account (so Facebook forgets the server's device).
 2. Remove the `messages-server` machine in Tailscale's admin console.

@@ -63,33 +63,15 @@ internal sealed class DevicePresence
 /// A connection's push service: what the server offers, and the registration of the device that connection belongs to. The setup is read at each call, so pushes
 /// turned on from the server's page are offered to a connection opened before.
 /// </summary>
-/// <param name="health">How pushes are doing, which the offer, a test's answer and the status read and feed (10.9); none on a host without the page's card.</param>
-/// <param name="devices">The paired devices by name, for the status.</param>
-internal sealed class DevicePush(Func<PushSetup?> setupNow, PushRegistry registry, string deviceId, PushHealth? health = null, Func<IReadOnlyList<PairedDevice>>? devices = null,
-    TimeProvider? time = null) : IPushService
+internal sealed class DevicePush(Func<PushSetup?> setupNow, PushRegistry registry, string deviceId) : IPushService
 {
     public DevicePush(PushSetup? setup, PushRegistry registry, string deviceId) : this(() => setup, registry, deviceId) { }
 
-    public Task<PushOffer> OfferAsync(CancellationToken cancellationToken = default)
-    {
-        var setup = setupNow();
-        // Only a phone asks: one that then never signs up is named on the page.
-        if (setup is not null) health?.Asked(deviceId);
-        return Task.FromResult(setup?.Offer ?? new PushOffer(false));
-    }
+    public Task<PushOffer> OfferAsync(CancellationToken cancellationToken = default) => Task.FromResult(setupNow()?.Offer ?? new PushOffer(false));
 
     public async Task RegisterAsync(PushRegisterParams registration, CancellationToken cancellationToken = default)
     {
         if (setupNow() is not { } setup) throw new NotSupportedException();
-        // A phone saying the project has no app for its package (10.9): a report kept beside the device for the page, never an address to send to, and never in
-        // place of a registration it has. Only for one of Messages' own packages, and one the project really lacks.
-        if (string.IsNullOrEmpty(registration.Token))
-        {
-            if (!FirebaseTransport.Packages.Contains(registration.Package) || setup.Offer.Apps?.Any(app => app.Package == registration.Package) == true) throw Invalid();
-            if (!await registry.SetMissingAsync(deviceId, registration.Package, (time ?? TimeProvider.System).GetUtcNow()).ConfigureAwait(false))
-                throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.Forbidden, "This device is no longer paired."));
-            return;
-        }
         byte[] key, auth;
         try { key = Convert.FromBase64String(registration.PublicKey); auth = Convert.FromBase64String(registration.Auth); }
         catch (FormatException) { throw Invalid(); }
@@ -99,19 +81,6 @@ internal sealed class DevicePush(Func<PushSetup?> setupNow, PushRegistry registr
         // Refused for a device removed while it was registering: its connection is being closed.
         if (!await registry.SetAsync(new PushRegistry.Registration(deviceId, registration.Token, registration.Package, key, auth, DateTimeOffset.UtcNow, registration.BackgroundSync)).ConfigureAwait(false))
             throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.Forbidden, "This device is no longer paired."));
-    }
-
-    public Task TestShownAsync(PushTestShownParams shown, CancellationToken cancellationToken = default)
-    {
-        if (health is null) throw new NotSupportedException();
-        health.Shown(deviceId, shown.Id);
-        return Task.CompletedTask;
-    }
-
-    public Task<PushStatus> StatusAsync(CancellationToken cancellationToken = default)
-    {
-        if (health is null) throw new NotSupportedException();
-        return Task.FromResult(health.Status(setupNow() is not null, registry, devices?.Invoke() ?? []));
     }
 
     private static ProtocolException Invalid() => new(new ProtocolError(ProtocolErrorCodes.InvalidRequest, "The push registration is not valid."));
@@ -154,7 +123,6 @@ internal sealed class PushNotifier : IAsyncDisposable
     private readonly IPushTransport transport;
     private readonly Func<string, bool> inFront;
     private readonly Func<string, bool>? quietFor;
-    private readonly PushHealth? health;
     private readonly Action<string> log;
     private readonly CancellationTokenSource stopping = new();
     // Two writers: the log's reader, and a burst's wake once the owner has stopped sending (BurstAsync).
@@ -172,12 +140,11 @@ internal sealed class PushNotifier : IAsyncDisposable
 
     /// <param name="localKey">The key the clients file their shared rows under (the host's state's identity), read when a conversation is judged.</param>
     /// <param name="quietFor">Whether a device's message pushes go quiet now (<see cref="DevicePresence.AtAnotherDevice"/>); none are without it.</param>
-    /// <param name="health">Where each push's outcome is told, for the page's card (10.9).</param>
     public PushNotifier(EventLog events, IChatReader chats, IMessageSender messages, PushRegistry registry, IPushTransport transport, Func<string, bool> inFront, Action<string> log,
-        ISharedState? shared = null, Func<string?>? localKey = null, Func<string, bool>? quietFor = null, PushHealth? health = null)
+        ISharedState? shared = null, Func<string?>? localKey = null, Func<string, bool>? quietFor = null)
     {
         this.events = events; this.chats = chats; this.messages = messages; this.registry = registry; this.transport = transport; this.inFront = inFront; this.log = log;
-        this.quietFor = quietFor; this.health = health;
+        this.quietFor = quietFor;
         var key = new LocalKey(localKey ?? (() => events.LatestState?.Identity?.LocalKey));
         judged = new LocalPreferenceChatReader(new Arriving(chats), SharedRowReads.Preferences(shared), key, snoozes: SharedRowReads.Snoozes(shared));
         merges = new MergedConversations(new PrivateState(SharedRowReads.Rows(shared), key), GoogleVoiceIds.TextRouteForCall);
@@ -375,18 +342,6 @@ internal sealed class PushNotifier : IAsyncDisposable
         catch (OperationCanceledException) { }
     }
 
-    /// <summary>
-    /// Tells every phone signed up for notifications that the server has made no good backup for two days (stage 10): kind <c>backup</c>, with no conversation, at normal
-    /// priority. A phone built before it opens the push and shows nothing (it acts only on the kinds it knows), so it is sent as a quiet wake would be, never urgent.
-    /// Returns how many were queued.
-    /// </summary>
-    public int BackupStale()
-    {
-        var queued = registry.All().Where(device => registry.Paired(device.DeviceId)).Count(device => Enqueue(new(device.DeviceId, new PushMessage(1, "backup", ""), Urgent: false)));
-        log($"push backup queued devices={queued}");
-        return queued;
-    }
-
     private bool Enqueue(Outgoing next)
     {
         Interlocked.Increment(ref queued);
@@ -436,9 +391,8 @@ internal sealed class PushNotifier : IAsyncDisposable
             return;
         }
         var payload = Convert.ToBase64String(sealedPush);
-        var result = await transport.SendWithStatusAsync(device.Token, payload, next.Urgent, sync: next.Push.Kind == "sync", token).ConfigureAwait(false);
-        health?.Report(device.DeviceId, result);
-        var outcome = result.Outcome;
+        var outcome = await (next.Push.Kind == "sync" ? transport.SendSyncAsync(device.Token, payload, next.Urgent, token) :
+            transport.SendAsync(device.Token, payload, next.Urgent, token)).ConfigureAwait(false);
         if (outcome == PushOutcome.Gone) await registry.RemoveAsync(device.DeviceId, "token_gone", device.Token).ConfigureAwait(false);
         if (outcome == PushOutcome.Sent) Interlocked.Increment(ref sent); else Interlocked.Increment(ref failed);
         log($"push sent kind={next.Push.Kind} outcome={outcome.ToString().ToLowerInvariant()} total={Volatile.Read(ref sent)} failed={Volatile.Read(ref failed)}{(next.Push.Quiet == true ? " quiet=yes" : "")}{(next.Push.Kind == "sync" && next.Urgent ? " urgent=yes" : "")}");

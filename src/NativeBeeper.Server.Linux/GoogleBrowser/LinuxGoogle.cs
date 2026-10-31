@@ -147,9 +147,6 @@ internal sealed record LinuxGoogle(ChromiumGoogleBrowser Browser, string Profile
     /// <summary>Where every Google profile goes from now on; once, before anything is composed (it is process-wide).</summary>
     public void UseProfilesFolder() => GoogleSignInProfile.UseRoot(ProfilesRoot);
 
-    /// <summary>Where Messenger's and Instagram's throwaway sign-in profiles go (<see cref="ThrowawayChromeProfile"/>): beside the Google profiles on the keys volume.</summary>
-    public string SignInProfilesRoot => Path.Combine(Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(ProfilesRoot))!, ThrowawayChromeProfile.FolderName);
-
     /// <summary>
     /// At start, before anything can open a profile: every profile on the keys volume that nothing names any more is deleted. Each is a full Google
     /// sign-in, and they are left behind by a seeding the server stopped in the middle of, by a data folder that was cleared (its pointer with it), or

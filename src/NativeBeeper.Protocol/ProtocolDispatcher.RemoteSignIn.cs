@@ -9,9 +9,6 @@ namespace NativeBeeper.Protocol;
 // and the host's limits all end it. What the browser shows goes to this connection only, as `signInView` events written straight to its channel, never through the
 // event log, so a client that resumes is given none and no other connection sees any. Neither a picture nor an input event is logged here, and the only thing the
 // journal keeps of the start is its operation id's hash and its answer.
-//
-// Every method runs its sign-in through the host's one RemoteSignInSessions (services.SignIns) with this connection as the driver. The server's page drives the same sessions from
-// its own socket (SWITCHBOARD.md 10.6), so one sign-in is open at a time across both, and input reaches a sign-in only from whoever started it.
 public sealed partial class ProtocolDispatcher
 {
     private static Dictionary<string, Route> AddRemoteSignInRoutes(Dictionary<string, Route> routes)
@@ -22,13 +19,21 @@ public sealed partial class ProtocolDispatcher
             var parameters = ReadParams<RemoteSignInParams>(request);
             if (parameters.ClientOpId is not { Length: > 0 and <= 128 } || !ParamsShape.HasRequiredValues(typeof(RemoteSignInParams), request.Params))
                 throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.InvalidRequest, "The request's params are missing or not valid."));
-            _ = services.RemoteSignIn ?? throw new NotSupportedException();
+            var port = services.RemoteSignIn ?? throw new NotSupportedException();
             if (connection.negotiated < ProtocolVersion.RemoteSignIn) throw new NotSupportedException();
             return new Prepared(parameters.ClientOpId, async cancellationToken =>
             {
-                // The keeper is told afterwards, as accounts.google.signIn does (RemoteSignInSessions).
-                await connection.SignInOnHostAsync(services, RemoteSignInServices.Google, parameters.ClientOpId, parameters.AsNewDevice, parameters.Width, parameters.Height, cancellationToken)
-                    .ConfigureAwait(false);
+                await using var progress = new ConnectionProgress(connection, services, parameters.ClientOpId);
+                await using var view = new ConnectionView(connection, services, parameters.ClientOpId);
+                await Coded(async () =>
+                {
+                    await port.SignInAsync(new RemoteSignInRequest(connection, parameters.ClientOpId, parameters.AsNewDevice, parameters.Width, parameters.Height), view, progress,
+                        cancellationToken).ConfigureAwait(false);
+                    // As accounts.google.signIn does once a sign-in has been accepted: the host's keeper is told, and a failure to tell is never the sign-in's.
+                    try { services.GoogleSignedIn?.Invoke(); }
+                    catch (Exception) { }
+                    return 0;
+                }).ConfigureAwait(false);
                 return JsonSerializer.SerializeToUtf8Bytes(new Done(), ProtocolJson.Options);
             });
         }, Settles: true));
@@ -39,31 +44,18 @@ public sealed partial class ProtocolDispatcher
             var parameters = ReadParams<VoiceRemoteSignInParams>(request);
             if (parameters.ClientOpId is not { Length: > 0 and <= 128 } || !ParamsShape.HasRequiredValues(typeof(VoiceRemoteSignInParams), request.Params))
                 throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.InvalidRequest, "The request's params are missing or not valid."));
-            _ = services.VoiceRemoteSignIn ?? throw new NotSupportedException();
+            var port = services.VoiceRemoteSignIn ?? throw new NotSupportedException();
             if (connection.negotiated < ProtocolVersion.VoiceRemoteSignIn) throw new NotSupportedException();
             return new Prepared(parameters.ClientOpId, async cancellationToken =>
             {
-                await connection.SignInOnHostAsync(services, RemoteSignInServices.Voice, parameters.ClientOpId, false, parameters.Width, parameters.Height, cancellationToken).ConfigureAwait(false);
+                await using var progress = new ConnectionProgress(connection, services, parameters.ClientOpId);
+                await using var view = new ConnectionView(connection, services, parameters.ClientOpId);
+                await Coded(async () =>
+                {
+                    await port.SignInAsync(new RemoteSignInRequest(connection, parameters.ClientOpId, false, parameters.Width, parameters.Height), view, progress, cancellationToken).ConfigureAwait(false);
+                    return 0;
+                }).ConfigureAwait(false);
                 return JsonSerializer.SerializeToUtf8Bytes(new Done(), ProtocolJson.Options);
-            });
-        }, Settles: true));
-
-        // Protocol 27: one method for any service. Google and Voice run exactly as their own methods do; Messenger and Instagram are the browser part on the host's cookie port, then the
-        // connect their own method makes (RemoteSignInFinish), so a sign-in made here and one handed up from a PC's window connect the same way. The owner's alone, like every sign-in.
-        routes[ProtocolMethods.ServerSignInMethod] = OwnerOnly(ProtocolMethods.ServerSignInMethod, new(typeof(ServerSignInParams), typeof(RemoteSignInResult), null, (connection, services, request) =>
-        {
-            var parameters = ReadParams<ServerSignInParams>(request);
-            if (parameters.ClientOpId is not { Length: > 0 and <= 128 } || !RemoteSignInServices.Known(parameters.Service) || !ParamsShape.HasRequiredValues(typeof(ServerSignInParams), request.Params))
-                throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.InvalidRequest, "The request's params are missing or not valid."));
-            if (connection.negotiated < ProtocolVersion.ServerSignIn) throw new NotSupportedException();
-            // Checked before the browser runs, so a host that cannot connect the account never shows a sign-in for it.
-            if (!RemoteSignInSessions.Offers(services, parameters.Service)) throw new NotSupportedException();
-            return new Prepared(parameters.ClientOpId, async cancellationToken =>
-            {
-                // Messages' keeper is told after Google's, Voice's add is the host's own, and Messenger and Instagram connect as their own methods do (RemoteSignInSessions).
-                var result = await connection.SignInOnHostAsync(services, parameters.Service, parameters.ClientOpId, parameters.AsNewDevice, parameters.Width, parameters.Height, cancellationToken)
-                    .ConfigureAwait(false);
-                return JsonSerializer.SerializeToUtf8Bytes(result, ProtocolJson.Options);
             });
         }, Settles: true));
 
@@ -73,38 +65,22 @@ public sealed partial class ProtocolDispatcher
         return routes;
     }
 
-    // One sign-in with this connection as its driver: the pictures to this connection alone, Google's emoji and the connect's stages as its progress.
-    private async Task<RemoteSignInResult> SignInOnHostAsync(ProtocolServices services, string service, string clientOpId, bool asNewDevice, int width, int height,
-        CancellationToken cancellationToken)
-    {
-        await using var progress = new ConnectionProgress(this, services, clientOpId);
-        await using var view = new ConnectionView(this, services, clientOpId);
-        var driver = new RemoteSignInDriver(this, RemoteSignInFaces.App, view, progress, Log);
-        return await Coded(() => services.SignIns.RunAsync(services, service, driver, clientOpId, asNewDevice, width, height, cancellationToken)).ConfigureAwait(false);
-    }
-
     // Not a mutation, so never journaled: it is the person's keystrokes. It belongs to this connection (the host answers input from the connection that is signing in only).
     private async Task<byte[]> RemoteSignInInputAsync(RequestFrame request, CancellationToken cancellationToken)
     {
         var parameters = ReadParams<RemoteSignInInputParams>(request);
-        if (services.RemoteSignIn is null && services.VoiceRemoteSignIn is null && services.MetaRemoteSignIn is null) throw new NotSupportedException();
+        // One window serves both: the host's two ports share the one browser, so either answers for the connection that is signing in.
+        var port = services.RemoteSignIn ?? services.VoiceRemoteSignIn ?? throw new NotSupportedException();
         if (negotiated < ProtocolVersion.RemoteSignIn) throw new NotSupportedException();
         if (parameters.Events.Count > RemoteSignIn.MaxEvents || parameters.Events.Any(item => item is null))
             throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.InvalidRequest, "The request's params are missing or not valid."));
-        // A connection below 27 never says it is done: the kind is not its to send.
-        if (negotiated < ProtocolVersion.ServerSignIn && parameters.Events.Any(item => item.Kind == RemoteSignIn.DoneKind))
-            throw new ProtocolException(new ProtocolError(ProtocolErrorCodes.InvalidRequest, "The request's params are missing or not valid."));
         await Coded(async () =>
         {
-            // To the port of the sign-in this connection holds, whichever service it is; holding none is no_sign_in.
-            await services.SignIns.InputAsync(this, parameters.Events, cancellationToken).ConfigureAwait(false);
+            await port.InputAsync(this, parameters.Events, cancellationToken).ConfigureAwait(false);
             return 0;
         }).ConfigureAwait(false);
         return JsonSerializer.SerializeToUtf8Bytes(new Done(), ProtocolJson.Options);
     }
-
-    // The connection's own log, for the fixed lines of a sign-in's connect (RemoteSignInFinish).
-    private Action<string>? Log => log;
 
     /// <summary>
     /// Where a running remote sign-in puts what the browser shows: the newest picture only (one the connection is too slow for is replaced, never queued), written by one pump in order,

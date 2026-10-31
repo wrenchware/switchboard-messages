@@ -321,7 +321,7 @@ internal sealed partial class ServerPage
                 else body.Append(Para("This server has no Tailscale door, so phones reach it at home only."));
                 break;
             case "accounts":
-                done = await AccountsStepAsync(body, cancellationToken).ConfigureAwait(false);
+                done = await AccountsStepAsync(body, request.HttpContext, token, cancellationToken).ConfigureAwait(false);
                 break;
             case "phone":
                 body.Append("<section>").Append(Para("Messages on your phone joins by scanning a code from this page: no codes to type or match. Install Messages on the phone first."))
@@ -361,8 +361,8 @@ internal sealed partial class ServerPage
         return (body.ToString(), waiting && !done);
     }
 
-    // The accounts' screen: what the server holds now, and where accounts are connected. Signing in on this page itself comes with 10.6.
-    private async Task<bool> AccountsStepAsync(StringBuilder body, CancellationToken cancellationToken)
+    // The accounts' screen: what the server holds now, and a Connect for each service the server's own browser signs in (ServerPage.SignIn.cs), or where to connect it instead.
+    private async Task<bool> AccountsStepAsync(StringBuilder body, HttpContext context, string token, CancellationToken cancellationToken)
     {
         IReadOnlyList<ServerAccount>? accounts = null;
         if (admin is not null)
@@ -375,7 +375,8 @@ internal sealed partial class ServerPage
             foreach (var account in accounts) Step(body, true, Provider(account.Provider), State(account.State), word: "Connected");
             body.Append("</ul>");
         }
-        body.Append(Para("Connect accounts from Messages on your PC once it has joined: Settings, Accounts. Each sign-in opens the service's own page.")).Append("</section>");
+        ConnectList(body, accounts, walkthrough: true, context, token);
+        body.Append("</section>");
         return accounts is { Count: > 0 };
     }
 

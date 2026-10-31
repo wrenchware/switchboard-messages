@@ -271,7 +271,7 @@ internal sealed partial class ServerPage
 
     /// <summary>Whether a request is one of the page's (any other path stays the door's 404).</summary>
     public static bool Serves(string? path) => path is "/" or "/login" or "/logout" or "/pair" or "/devices/remove" or "/log" or "/joins/approve" or "/joins/deny" or "/joins/pause" or "/push"
-        or "/push/test" or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path) || IsDesktopPath(path);
+        or "/push/test" or "/mirror" or LogoPath || IsBackupPath(path) || IsSetupPath(path) || IsTailnetPath(path) || IsDesktopPath(path) || IsSignInPath(path);
 
     /// <summary>The page's logo, shown before signing in too (it is the app's own icon, nothing of the server's).</summary>
     public const string LogoPath = "/logo.png";
@@ -438,6 +438,9 @@ internal sealed partial class ServerPage
             case "/signin/desktop" when post:
                 DesktopSignInPost(context, form!);
                 return;
+            case SignInPath:
+                await SignInViewAsync(context, token).ConfigureAwait(false);
+                return;
             case { } door when IsTailnetPath(door):
                 await TailnetAsync(context, door, form, token).ConfigureAwait(false);
                 return;
@@ -586,9 +589,12 @@ internal sealed partial class ServerPage
     }
 
     // The session the request's cookie is, when it is one this server made with this password and it has not ended.
-    private string? Session(HttpRequest request)
+    private string? Session(HttpRequest request) => request.Cookies.TryGetValue(CookieName, out var cookie) ? SessionOf(cookie) : null;
+
+    // The same for a cookie's value already read (the sign-in view's socket checks it again while it runs).
+    private string? SessionOf(string? cookie)
     {
-        if (!request.Cookies.TryGetValue(CookieName, out var cookie) || cookie is not { Length: > 0 and <= 128 }) return null;
+        if (cookie is not { Length: > 0 and <= 128 }) return null;
         byte[] bytes;
         try { bytes = FromBase64Url(cookie); }
         catch (FormatException) { return null; }
@@ -763,8 +769,9 @@ internal sealed partial class ServerPage
             body.Append("</ul>");
             body.Append("<p class=\"quiet\">Accounts are removed in Messages, from Manage server on the PC that manages the server.</p>");
         }
-        // The Windows server, in a browser on its own PC: Connect opens the native sign-in on the desktop (ServerPage.Desktop.cs).
-        DesktopSignInForms(body, request.HttpContext, token);
+        // Signing in from this page (ServerPage.SignIn.cs): a Connect for each service the server's own browser signs in, and where to do it for the rest; on the Windows server,
+        // the native sign-in on its own desktop instead (ServerPage.Desktop.cs).
+        ConnectList(body, accounts, walkthrough: false, request.HttpContext, token);
         body.Append("</section>");
 
         if (backups is not null) await BackupsCardAsync(body, token, cancellationToken).ConfigureAwait(false);

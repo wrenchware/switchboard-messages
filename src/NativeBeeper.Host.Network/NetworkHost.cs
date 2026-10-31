@@ -262,6 +262,8 @@ internal sealed class NetworkHost : IAsyncDisposable
         host.Pushes = pushSwitch;
         host.PushHealth = health;
         host.PushRegistrations = pushes;
+        // Signing in on the page runs through the same sign-ins as every connection's (services.SignIns).
+        host.page?.OfferSignIn(services);
         // Another project's files: every phone's address was the old project's, so each is forgotten and signs up again (at once when it is open: below).
         pushSwitch.ProjectChanged += changedAt =>
         {
@@ -455,6 +457,12 @@ internal sealed class NetworkHost : IAsyncDisposable
     private async Task HandleAsync(HttpContext context)
     {
         var request = context.Request;
+        // The page's own socket for signing in on it (SWITCHBOARD.md 10.6), to the home network only as the page is; the page itself asks for its cookie, its token and its origin.
+        if (page is not null && string.Equals(request.Path.Value, ServerPage.SignInSocketPath, StringComparison.Ordinal) && FromTrustedNetwork(context))
+        {
+            await page.SignInSocketAsync(context, draining, () => Ticket(context)?.Leave(), stopping.Token).ConfigureAwait(false);
+            return;
+        }
         // The server's own page, when its owner set it a password (ServerPage): its few paths only, to the home network only, each answer closing its connection.
         if (page is not null && ServerPage.Serves(request.Path.Value) && FromTrustedNetwork(context))
         {

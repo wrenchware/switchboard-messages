@@ -177,8 +177,8 @@ public interface IRemoteSignInOutput
 /// A sign-in in the host's own browser whose result is the service's cookies (protocol 27: Messenger and Instagram), made on a throwaway profile and read when the person says they are done. A host
 /// without one (every host but the Linux server with its own Chrome) leaves it null, and those services answer <c>not_supported</c> on <see cref="ProtocolMethods.ServerSignInMethod"/>.
 /// <para>
-/// The session is held by <see cref="RemoteSignInRequest.Owner"/>, any object: the dispatcher gives its connection, and another face of the same flow (the server page's own socket, 10.6) gives its
-/// own object and its own <see cref="IRemoteSignInOutput"/>, and calls <see cref="RemoteSignInFinish.ConnectAsync"/> with the cookies, exactly as the dispatcher does.
+/// The session is held by <see cref="RemoteSignInRequest.Owner"/>, any object: every face of the flow runs it through <see cref="RemoteSignInSessions"/>, the dispatcher with its connection and the
+/// server page's own socket (10.6) with an object of its own, each with its own <see cref="IRemoteSignInOutput"/>, and the cookies go on to <see cref="RemoteSignInFinish.ConnectAsync"/> the same way.
 /// </para>
 /// </summary>
 public interface IRemoteCookieSignInHost

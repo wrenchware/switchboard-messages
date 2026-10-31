@@ -12,7 +12,7 @@ internal sealed partial class GoogleMessagesBackend
         if(IsPlaceholder(chatId)) throw new BackendException(BackendFailure.Unavailable,"That conversation isn't available right now. Refresh and try again.");
         var result=await ReadAsync("ui.chat",new {chatId=GoogleModels.Native(chatId)},token);
         var chat=result.Deserialize<GoogleChat>(Json);
-        if(chat is null || chat.Id!=GoogleModels.Native(chatId)) throw new BackendException(BackendFailure.Unavailable,"Conversation could not be refreshed.");
+        if(chat is null || chat.Id!=GoogleModels.Native(chatId)) throw new BackendException(BackendFailure.Unavailable,"Conversation couldn't be refreshed.");
         SetChat(chat);
         ArchiveChats([chat]);
         return chat;

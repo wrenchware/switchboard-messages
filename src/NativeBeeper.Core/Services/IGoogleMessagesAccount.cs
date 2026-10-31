@@ -58,7 +58,7 @@ public sealed record GoogleKnownChat(string Id, bool Group, IReadOnlyList<Google
 public interface IGoogleMessagesAccount
 {
     /// <summary>The conversations were renumbered by the phone; the notice Google sends are refused with until a reset.</summary>
-    const string RenumberedNotice = "Google Messages renumbered its conversations on your phone. Open Settings > Troubleshooting and reset Google Messages local data.";
+    const string RenumberedNotice = "Google Messages renumbered its conversations on your phone. Open Settings → Troubleshooting and reset Google Messages local data.";
 
     /// <summary>The account as it is now. Time passes in some of it (settling ends on its own), so read it again rather than keep it.</summary>
     GoogleMessagesAccountState State { get; }

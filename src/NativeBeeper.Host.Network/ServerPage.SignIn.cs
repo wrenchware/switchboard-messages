@@ -56,10 +56,16 @@ internal sealed partial class ServerPage
         if (DesktopSignIn is not null)
         {
             DesktopSignInForms(body, context, token);
-            if (!OnThisPc(context)) body.Append(Para("Accounts are connected on the PC this server runs on: in Messages there, Settings, Accounts, or Connect on this page in a browser on that PC."));
+            if (!OnThisPc(context)) body.Append(Para("Accounts are connected on the PC this server runs on: in Messages there (Settings → Accounts), or with Connect on this page in a browser on that PC."));
             return;
         }
         var services = signInServices;
+        // A server with no browser at all says so once, rather than the same sentence under each of the four services.
+        if (!AnyBrowser(services))
+        {
+            body.Append(Para("This server can't show sign-in pages because it has no Google Chrome. Connect accounts from Messages on a PC that uses this server, in Settings → Accounts."));
+            return;
+        }
         var any = false;
         body.Append("<ul class=\"rows connect\">");
         foreach (var (service, name, provider) in SignInServiceList)
@@ -93,11 +99,13 @@ internal sealed partial class ServerPage
     private static string Elsewhere(string service, ProtocolServices? services)
     {
         var name = SignInName(service);
-        var anyBrowser = services is not null && (services.RemoteSignIn is not null || services.VoiceRemoteSignIn is not null || services.MetaRemoteSignIn is not null);
-        return anyBrowser
-            ? $"This server can't sign in to {name} in its own browser. Connect it from Messages on a PC that uses this server: Settings, Accounts."
-            : $"This server runs without its own Google Chrome, so it can't show a sign-in for {name}. Connect it from Messages on a PC that uses this server: Settings, Accounts.";
+        return AnyBrowser(services)
+            ? $"This server can't sign in to {name} in its own browser. Connect it from Messages on a PC that uses this server, in Settings → Accounts."
+            : $"This server can't show sign-in pages because it has no Google Chrome. Connect {name} from Messages on a PC that uses this server, in Settings → Accounts.";
     }
+
+    private static bool AnyBrowser(ProtocolServices? services) =>
+        services is not null && (services.RemoteSignIn is not null || services.VoiceRemoteSignIn is not null || services.MetaRemoteSignIn is not null);
 
     private static string BusyWords(string? face) => face switch
     {

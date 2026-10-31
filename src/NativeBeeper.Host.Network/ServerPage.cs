@@ -311,7 +311,7 @@ internal sealed partial class ServerPage
         }
         if (!get && !post || get && path is "/logout" or "/joins/deny" or "/joins/pause" or "/mirror" or "/push/test" || post && path is "/" or "/log" or LogoPath)
         {
-            await PlainAsync(context, StatusCodes.Status405MethodNotAllowed, "Not here.").ConfigureAwait(false);
+            await PlainAsync(context, StatusCodes.Status405MethodNotAllowed, "There's nothing at this address.").ConfigureAwait(false);
             return;
         }
         // A form comes from this page or not at all: its own origin (which a browser always names on a POST), and no larger than a form.
@@ -325,7 +325,7 @@ internal sealed partial class ServerPage
         {
             if (!SameOrigin(request))
             {
-                await PlainAsync(context, StatusCodes.Status403Forbidden, "That came from another page.").ConfigureAwait(false);
+                await PlainAsync(context, StatusCodes.Status403Forbidden, "That request came from another website, so the server ignored it.").ConfigureAwait(false);
                 return;
             }
             // The notifications form alone carries files.
@@ -334,13 +334,13 @@ internal sealed partial class ServerPage
             if (context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } limit) limit.MaxRequestBodySize = most;
             if (!request.HasFormContentType || request.ContentLength is not { } length || length < 0 || length > most)
             {
-                await PlainAsync(context, StatusCodes.Status400BadRequest, "That is not a form of this page.").ConfigureAwait(false);
+                await PlainAsync(context, StatusCodes.Status400BadRequest, "The server couldn't read that form. Go back and try again.").ConfigureAwait(false);
                 return;
             }
             try { form = await request.ReadFormAsync(context.RequestAborted).ConfigureAwait(false); }
             catch (Exception failure) when (failure is InvalidDataException or IOException or BadHttpRequestException)
             {
-                await PlainAsync(context, StatusCodes.Status400BadRequest, "That is not a form of this page.").ConfigureAwait(false);
+                await PlainAsync(context, StatusCodes.Status400BadRequest, "The server couldn't read that form. Go back and try again.").ConfigureAwait(false);
                 return;
             }
         }
@@ -527,7 +527,7 @@ internal sealed partial class ServerPage
                 await PageAsync(context, StatusCodes.Status429TooManyRequests, "Sign in", SignInBody("Too many tries. Wait a minute, then try again.")).ConfigureAwait(false);
                 return;
             case Try.Wrong:
-                await PageAsync(context, StatusCodes.Status401Unauthorized, "Sign in", SignInBody("That isn't the password set for this server.")).ConfigureAwait(false);
+                await PageAsync(context, StatusCodes.Status401Unauthorized, "Sign in", SignInBody("That isn't the server password.")).ConfigureAwait(false);
                 return;
         }
         var expires = time.GetUtcNow() + SessionLifetime;
@@ -546,7 +546,7 @@ internal sealed partial class ServerPage
                 await PageAsync(context, StatusCodes.Status429TooManyRequests, title, body("Too many tries. Wait a minute, then try again.")).ConfigureAwait(false);
                 return false;
             case Try.Wrong:
-                await PageAsync(context, StatusCodes.Status401Unauthorized, title, body("That isn't the password set for this server.")).ConfigureAwait(false);
+                await PageAsync(context, StatusCodes.Status401Unauthorized, title, body("That isn't the server password.")).ConfigureAwait(false);
                 return false;
             default:
                 return true;
@@ -702,19 +702,19 @@ internal sealed partial class ServerPage
             "backup_busy" => "A backup is already running, or there's no password yet.",
             "backup_checking" => "Reading the latest backup back now. Reload in a minute to see what it found.",
             "backup_password" => "The backup password is set. Keep it safe: without it the backups can't be read.",
+            // The Windows server's folder, typed on the Backups card (ServerBackupService.ChooseFolder).
+            "backup_folder" => "Backups go to that folder now.",
+            "backup_folder_not_full" => "Type the whole path, starting with a drive letter, or with \\\\ for a network share.",
+            "backup_folder_missing" => "That folder doesn't exist. Check the path and try again.",
+            "backup_folder_unsaved" => "The server couldn't save that choice. Try again.",
+            "backup_folder_fixed" => "This server's backup folder is set where it was installed, so it can't be changed here.",
             "desktop_sign_in" => "The sign-in opened in Messages on this PC.",
             "desktop_sign_in_failed" => "Messages couldn't be opened on this PC to sign in. Open it from the Start menu and connect the account in Settings.",
             _ => TailnetNotice(done),
         };
         if (said is not null) body.Append(Notice(said));
-        await ChecklistAsync(body, token, cancellationToken).ConfigureAwait(false);
-
+        // A device asking to join is the one thing that needs someone now, so it comes first; the server's own details come last.
         var waiting = joins.Waiting();
-        body.Append("<section><h2>Requests to join</h2>")
-            .Append(Para(joins.Paused ? "Requests are paused. Paired devices keep working." : "Devices on your home network can ask to join."))
-            .Append("<form method=\"post\" action=\"/joins/pause\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token))
-            .Append("\"><input type=\"hidden\" name=\"paused\" value=\"").Append(joins.Paused ? "no" : "yes")
-            .Append("\"><button type=\"submit\">").Append(joins.Paused ? "Allow requests" : "Pause requests").Append("</button></form></section>");
         if (waiting.Count > 0)
         {
             body.Append("<section class=\"attention\"><h2>Waiting to join</h2><ul class=\"rows\">");
@@ -730,27 +730,12 @@ internal sealed partial class ServerPage
             body.Append("</ul><p class=\"quiet\">Approve only a device that shows the same code.</p></section>");
         }
 
+        await ChecklistAsync(body, token, cancellationToken).ConfigureAwait(false);
+
         HostStatus? status = null;
         if (admin is not null)
             try { status = await admin.StatusAsync(cancellationToken).ConfigureAwait(false); }
             catch (Exception failure) when (failure is not OperationCanceledException) { }
-        body.Append("<section><h2>Server</h2><dl>");
-        if (status is not null)
-        {
-            // The version alone: how the server is updated is its host's schedule, which it cannot know, and its protocol and build are in its log.
-            Row(body, "Version", status.App);
-            // Only said when something is wrong: a running sandbox, or one turned off by whoever installed the server, is nothing a person needs to read.
-            if (status.ChromeSandbox is ChromeSandboxWords.Inactive)
-                Row(body, "Google Chrome", "its sandbox isn't working: the pages it opens are not walled off from the rest of the server");
-        }
-        Row(body, "Address", Address(request), copy: true);
-        Row(body, "Fingerprint", fingerprint(), copy: true);
-        body.Append("</dl>");
-        if (status is null) body.Append(Para("The server couldn't say what it is just now."));
-        body.Append("</section>");
-
-        if (tailnet is not null) TailnetCard(body, tailnet, token);
-        if (pushes is not null) PushCard(body, pushes, token);
 
         body.Append("<section id=\"accounts\"><h2>Accounts</h2>");
         IReadOnlyList<ServerAccount>? accounts = null;
@@ -767,16 +752,12 @@ internal sealed partial class ServerPage
                     .Append(account.Name is { Length: > 0 } name ? "<span class=\"quiet\">" + Html(name) + "</span>" : "").Append("</span>")
                     .Append("<span class=\"state\"><span class=\"dot ").Append(Tone(account.State)).Append("\"></span>").Append(Html(State(account.State))).Append("</span></li>");
             body.Append("</ul>");
-            body.Append("<p class=\"quiet\">Accounts are removed in Messages, from Manage server on the PC that manages the server.</p>");
+            body.Append("<p class=\"quiet\">To remove an account, use Manage server in Messages on the PC that manages this server.</p>");
         }
         // Signing in from this page (ServerPage.SignIn.cs): a Connect for each service the server's own browser signs in, and where to do it for the rest; on the Windows server,
         // the native sign-in on its own desktop instead (ServerPage.Desktop.cs).
         ConnectList(body, accounts, walkthrough: false, request.HttpContext, token);
         body.Append("</section>");
-
-        if (backups is not null) await BackupsCardAsync(body, token, cancellationToken).ConfigureAwait(false);
-
-        if (history is not null) await CopiesCardAsync(body, token, cancellationToken).ConfigureAwait(false);
 
         var list = devices.List(null);
         body.Append("<section id=\"devices\"><h2>Devices</h2>");
@@ -791,9 +772,36 @@ internal sealed partial class ServerPage
                     .Append("<a class=\"quiet\" href=\"/devices/remove?id=").Append(Uri.EscapeDataString(device.Id)).Append("\">Remove</a></li>");
             body.Append("</ul>");
         }
-        body.Append("<p class=\"quiet\">A phone scans a code from Add a phone. A PC pastes a line from Add a PC, or asks to join: in Messages, Settings, Messages Server, with this server's address.</p>");
+        body.Append("<p class=\"quiet\">Add a phone shows a code to scan. Add a PC gives a line to paste into Messages on the PC, in Settings → Accounts → Messages Server.</p>");
         // Pages that ask for the password first (a GET, so nothing is done by following them).
         body.Append("<p class=\"actions\"><a class=\"button\" href=\"/phone\">Add a phone…</a> <a class=\"button quiet\" href=\"/pair\">Add a PC…</a></p>");
+        // Asking to join is a way in for devices, so its switch sits with them rather than in a card of its own.
+        body.Append("<form class=\"inline\" method=\"post\" action=\"/joins/pause\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token))
+            .Append("\"><input type=\"hidden\" name=\"paused\" value=\"").Append(joins.Paused ? "no" : "yes").Append("\"><span class=\"quiet\">")
+            .Append(joins.Paused ? "Requests to join are paused. Paired devices keep working." : "Devices on your home network can ask to join.")
+            .Append("</span><button type=\"submit\" class=\"quiet\">").Append(joins.Paused ? "Allow requests" : "Pause requests").Append("</button></form>");
+        body.Append("</section>");
+
+        if (pushes is not null) PushCard(body, pushes, token);
+        if (tailnet is not null) TailnetCard(body, tailnet, token);
+
+        if (backups is not null) await BackupsCardAsync(body, token, cancellationToken).ConfigureAwait(false);
+
+        if (history is not null) await CopiesCardAsync(body, token, cancellationToken).ConfigureAwait(false);
+
+        body.Append("<section><h2>Server</h2><dl>");
+        if (status is not null)
+        {
+            // The version alone: how the server is updated is its host's schedule, which it cannot know, and its protocol and build are in its log.
+            Row(body, "Version", status.App);
+            // Only said when something is wrong: a running sandbox, or one turned off by whoever installed the server, is nothing a person needs to read.
+            if (status.ChromeSandbox is ChromeSandboxWords.Inactive)
+                Row(body, "Google Chrome", "Its sandbox isn't working, so the pages it opens aren't kept apart from the rest of the server.");
+        }
+        Row(body, "Address", Address(request), copy: true);
+        Row(body, "Fingerprint", fingerprint(), copy: true);
+        body.Append("</dl>");
+        if (status is null) body.Append(Para("The server couldn't say what it is just now."));
         body.Append("</section>");
 
         if (backups is not null) ResetCard(body);
@@ -802,7 +810,7 @@ internal sealed partial class ServerPage
         body.Append("<footer><a href=\"/log\">Recent log</a><a href=\"").Append(Html(SourceCode.For(status?.App, status?.Revision)))
             .Append("\" target=\"_blank\" rel=\"noopener noreferrer\">Source code</a>").Append(Form("/logout", token, "Sign out", quiet: true)).Append("</footer>");
         // Every 5 seconds while the server waits to be signed in to Tailscale, so the card moves on as soon as it has been; every 2 while a test push is waited on.
-        return (body.ToString(), status is null ? null : "Running for " + Span(time.GetUtcNow() - status.Started),
+        return (body.ToString(), status is null ? null : Span(time.GetUtcNow() - status.Started) is { Length: > 0 } span ? "Running for " + span : "Just started",
             pushes?.Health.Test is { State: PushTestState.Waiting } ? 2 : waiting.Count > 0 ? 10 : TailnetWaiting ? 5 : 30);
     }
 
@@ -821,7 +829,7 @@ internal sealed partial class ServerPage
     {
         var body = new StringBuilder("<section>");
         // Add a PC (SWITCHBOARD.md 10.4): the three in one line, which the PC's server dialog takes pasted whole.
-        body.Append(Para($"In Messages on the PC, open Settings, then Messages Server, and paste this line where it asks for the server's address. The code in it works once, for the next {(int)PairingCodes.Lifetime.TotalMinutes} minutes; making another replaces it."));
+        body.Append(Para($"In Messages on the PC, open Settings → Accounts → Messages Server, and paste this line where it asks for the server's address. The code in it works once, for the next {(int)PairingCodes.Lifetime.TotalMinutes} minutes; making another replaces it."));
         body.Append("<p class=\"copy block line\">").Append(Html(JoinLink.Line(Address(request), fingerprint(), code))).Append("</p>");
         body.Append(Para("Or choose to use a pairing code there, and enter these three:"));
         body.Append("<dl>");
@@ -869,7 +877,7 @@ internal sealed partial class ServerPage
     {
         var form = new StringBuilder("<form method=\"post\" action=\"").Append(action).Append("\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">");
         if (id is not null) form.Append("<input type=\"hidden\" name=\"id\" value=\"").Append(Html(id)).Append("\">");
-        return form.Append("<label for=\"password\">Password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required autofocus>")
+        return form.Append("<label for=\"password\">Server password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required autofocus>")
             .Append("<button type=\"submit\"").Append(danger ? " class=\"danger\"" : "").Append('>').Append(Html(button)).Append("</button><a class=\"cancel\" href=\"/\">Cancel</a></form>").ToString();
     }
 
@@ -895,26 +903,34 @@ internal sealed partial class ServerPage
         HistoryMirrorResult? mirror = null;
         try { mirror = await history!.MirrorAsync(new HistoryMirrorParams(), cancellationToken).ConfigureAwait(false); }
         catch (Exception failure) when (failure is not OperationCanceledException) { }
-        body.Append("<section><h2>Conversation copies</h2>");
-        if (mirror is null) body.Append(Para("The server couldn't say how its copies compare just now."));
+        body.Append("<section><h2>Sync check</h2>");
+        if (mirror is null) body.Append(Para("The server couldn't say how its last check went just now."));
         else if (mirror.Reports.Count == 0) body.Append(Para(mirror.Running ? "Checking now." : "Not checked yet. The server checks every half hour."));
         else
         {
             body.Append("<ul class=\"rows\">");
             foreach (var report in mirror.Reports)
             {
-                var found = report.Differed == 0 ? "all matched"
-                    : $"{report.Differed} differed ({report.Missing} missing, {report.Extra} gone, {report.Changed} changed), read again";
+                var found = report.Differed == 0 ? "all match"
+                    : $"{report.Differed} {(report.Differed == 1 ? "was" : "were")} out of date and {(report.Differed == 1 ? "is" : "are")} fixed ({Parts(report)})";
                 body.Append("<li><span class=\"grow\"><strong>").Append(Html(Service(report.Service))).Append("</strong><span class=\"quiet\">")
                     .Append(report.Checked).Append(" checked · ").Append(Html(found))
-                    .Append(report.Skipped > 0 ? $" · {report.Skipped} not read" : "").Append(" · ").Append(Html(Ago(report.At))).Append("</span></span></li>");
+                    .Append(report.Skipped > 0 ? $" · {report.Skipped} skipped" : "").Append(" · ").Append(Html(Ago(report.At))).Append("</span></span></li>");
             }
             body.Append("</ul>");
             if (mirror.Running) body.Append(Para("Checking again now."));
         }
-        body.Append("<p class=\"quiet\">Each service's most recently active conversations, compared with what the service has. Nothing is sent or marked read.</p>");
+        body.Append("<p class=\"quiet\">Every half hour the server compares its most active conversations with each service and fixes any that differ. Nothing is sent or marked read.</p>");
         body.Append(Form("/mirror", token, "Check now", quiet: true)).Append("</section>");
     }
+
+    // Only the kinds of difference the check found.
+    private static string Parts(HistoryMirrorReport report) => string.Join(", ", new[]
+    {
+        report.Missing > 0 ? $"{report.Missing} missing" : null,
+        report.Extra > 0 ? $"{report.Extra} deleted" : null,
+        report.Changed > 0 ? $"{report.Changed} changed" : null,
+    }.Where(part => part is not null));
 
     private static string Service(string service) => service switch
     {
@@ -951,6 +967,17 @@ internal sealed partial class ServerPage
         _ => "",
     };
 
+    // The short word beside an account in the walkthrough, where State() is the line under it.
+    private static string Word(string state) => state switch
+    {
+        ServerAccountStates.Connected => "Connected",
+        ServerAccountStates.Paired => "Paired",
+        ServerAccountStates.Saved => "Not connected",
+        ServerAccountStates.MovedAway => "Moved",
+        ServerAccountStates.Moving => "Moving",
+        _ => "",
+    };
+
     // As Messages asks for it: the name or address and the port.
     private static string Address(HttpRequest request) => request.Host.Value ?? "";
 
@@ -959,7 +986,7 @@ internal sealed partial class ServerPage
     // How long the server has run, for the badge beside the title.
     private static string Span(TimeSpan span) =>
         span.TotalDays >= 2 ? $"{(int)span.TotalDays} days" : span.TotalHours >= 2 ? $"{(int)span.TotalHours} hours" : span.TotalMinutes >= 2 ? $"{(int)span.TotalMinutes} minutes"
-        : span.TotalHours >= 1 ? "an hour" : "a minute";
+        : span.TotalHours >= 1 ? "an hour" : "";
 
     private static string Html(string? text) => WebUtility.HtmlEncode(text ?? "");
 
@@ -993,6 +1020,8 @@ internal sealed partial class ServerPage
         + "button{font:inherit;padding:6px 14px;border-radius:4px;border:1px solid var(--accent);background:var(--accent);color:var(--on-accent);cursor:pointer}"
         + "button.quiet{background:transparent;color:var(--accent)}button.danger{background:var(--danger);border-color:var(--danger)}"
         + "footer{display:flex;align-items:center;gap:16px;font-size:14px}footer form{margin:0}footer button.quiet{border:0;padding:0;text-decoration:underline}"
+        // A card's closing line with its own button beside it (Devices: requests to join).
+        + "form.inline{display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;border-top:1px solid var(--line);padding-top:12px;margin:12px 0 0}form.inline span{flex:1;min-width:12em;font-size:14px}"
         + "pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.4 Consolas,ui-monospace,monospace;background:var(--card);border:1px solid var(--line);padding:12px;border-radius:8px}"
         // The tailnet card's steps: a command or a rule to copy, and a link into Tailscale's console, under a step's words.
         + ".copy.block{display:block;margin:6px 0 0;overflow-wrap:anywhere}.grow>a.button,.grow>.copy.block{align-self:flex-start}.grow>pre{margin:8px 0 6px}a.button.small{font-size:13px;padding:3px 10px;margin-top:6px}"
@@ -1018,7 +1047,7 @@ internal sealed partial class ServerPage
     }
 
     private static Task PlainAsync(HttpContext context, int status, string text) =>
-        PageAsync(context, status, status >= 500 ? "Something went wrong" : "Not done", Para(text) + "<p><a href=\"/\">Back to the server's page</a></p>");
+        PageAsync(context, status, status >= 500 ? "Something went wrong" : "That didn't work", Para(text) + "<p><a href=\"/\">Back to the server's page</a></p>");
 
     private static void Redirect(HttpResponse response, string to)
     {

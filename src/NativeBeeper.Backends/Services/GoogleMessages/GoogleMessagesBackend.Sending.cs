@@ -29,7 +29,7 @@ internal sealed partial class GoogleMessagesBackend : INotificationActionHints
             {
                 await ConnectAsync(cancellationToken);
                 var result = await ReadAsync("ui.sendPermission", new { chatId = GoogleModels.Native(chatId) }, cancellationToken);
-                return WithDefaultSmsCaution(result.Deserialize<SendPermission>(Json) ?? new(false,"Could not verify Google Messages send permission."));
+                return WithDefaultSmsCaution(result.Deserialize<SendPermission>(Json) ?? new(false,"Couldn't verify Google Messages send permission."));
             }
             catch (BackendException ex) when (ex.Failure == BackendFailure.Unavailable && attempt < 2)
             { await Task.Delay(TimeSpan.FromSeconds(attempt + 1), cancellationToken); }

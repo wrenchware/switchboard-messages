@@ -53,7 +53,7 @@ internal sealed partial class GoogleMessagesBackend
             {
                 "pair_qr_timeout" => "The code expired before your phone scanned it. Try again and scan the new code.",
                 "pair_qr_start_failed" => "Google would not start the pairing. Check that the server can reach the internet and try again.",
-                "pair_qr_refresh_failed" => "The code could not be refreshed. Try again.",
+                "pair_qr_refresh_failed" => "The code couldn't be refreshed. Try again.",
                 "request_cancelled" => "Pairing was cancelled.",
                 var code when GooglePairingFailure.Message(code) is { } reason => reason,
                 _ => "Your phone did not finish pairing. In Google Messages, open Device pairing, choose QR code scanner and scan the new code."

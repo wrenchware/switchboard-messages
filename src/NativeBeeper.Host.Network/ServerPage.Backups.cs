@@ -53,8 +53,7 @@ internal sealed partial class ServerPage
                 body.Append("</section>");
                 return;
             }
-            body.Append(Para("Backups are off: the server has no folder for them. Give it one, then start it again: with Docker, map a folder on your server to /backups "
-                + "(on Unraid, a share such as /mnt/user/backups/messages); or set MESSAGES_BACKUPS to a folder the server can write to."));
+            body.Append(Para("Backups are off until the server has a folder for them. " + MapBackups));
             body.Append("</section>");
             return;
         }
@@ -78,7 +77,7 @@ internal sealed partial class ServerPage
         body.Append("<form method=\"post\" action=\"/backups\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">")
             .Append(status.HasPassword && status.State != ServerBackupStates.Running ? "<button type=\"submit\" name=\"do\" value=\"now\">Back up now</button> " : "")
             .Append(status.LastGood is not null && status.State != ServerBackupStates.Running ? "<button type=\"submit\" name=\"do\" value=\"check\" class=\"quiet\">Check latest</button> " : "")
-            .Append("<button type=\"submit\" name=\"do\" value=\"").Append(status.Enabled ? "off" : "on").Append("\" class=\"quiet\">").Append(status.Enabled ? "Turn off" : "Turn on").Append("</button></form>")
+            .Append("<button type=\"submit\" name=\"do\" value=\"").Append(status.Enabled ? "off" : "on").Append("\" class=\"quiet\">").Append(status.Enabled ? "Turn off daily backups" : "Turn on daily backups").Append("</button></form>")
             .Append("<form method=\"get\" action=\"/backups/password\"><button type=\"submit\" class=\"quiet\">").Append(status.HasPassword ? "Change the password…" : "Set a password…").Append("</button></form>");
         body.Append("<p class=\"quiet\">Each backup holds your conversations, the server's settings and its devices, never a sign-in: after a restore you sign in to each account again.</p>");
         if (service.FolderChoiceFile is not null) body.Append("<details><summary>Use another folder</summary>").Append(FolderForm(token, service.Folder)).Append("</details>");
@@ -181,7 +180,7 @@ internal sealed partial class ServerPage
                 .Append("<form method=\"post\" action=\"/backups/password\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">")
                 .Append("<label for=\"backup\">Backup password (at least 8 characters)</label><input id=\"backup\" name=\"backup\" type=\"password\" autocomplete=\"new-password\" required minlength=\"8\">")
                 .Append("<label for=\"again\">The backup password again</label><input id=\"again\" name=\"again\" type=\"password\" autocomplete=\"new-password\" required minlength=\"8\">")
-                .Append("<label for=\"password\">The server's password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
+                .Append("<label for=\"password\">Server password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
                 .Append("<button type=\"submit\">Set the password</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
             return body.Append("</section>").ToString();
         }
@@ -305,12 +304,12 @@ internal sealed partial class ServerPage
                 foreach (var device in preview.Devices)
                     body.Append("<li><label class=\"grow\"><span><input type=\"checkbox\" name=\"keep\" value=\"").Append(Html(device.Id)).Append("\" checked> <strong>").Append(Html(device.Name)).Append("</strong></span>")
                         .Append("<span class=\"quiet\">").Append(device.LastSeen is { } seen ? "last connected " + Html(When(seen)) : "never connected").Append("</span></label></li>");
-                body.Append("</ul><p><label><input type=\"checkbox\" name=\"forget_all\" value=\"yes\"> Forget every device from the backup (all new equipment: devices join again as usual)</label></p>");
+                body.Append("</ul><p><label><input type=\"checkbox\" name=\"forget_all\" value=\"yes\"> Don't bring back any devices (each one asks to join again)</label></p>");
             }
             body.Append(Para("A device that joined after this backup was made is refused and told to ask to join again. Every device starts its copy of your conversations over and keeps its drafts. The server's certificate comes back too, so your browser may warn about this page once."));
             body.Append(Para("The phone finds the server by its Tailscale name: if this is new hardware, remove the old machine in Tailscale first, or this one becomes messages-server-1."));
         }
-        body.Append("<label for=\"password\">The server's password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
+        body.Append("<label for=\"password\">Server password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
             .Append("<button type=\"submit\" class=\"danger\">Restore and start again</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
         return body.Append("</section>").ToString();
     }
@@ -365,7 +364,7 @@ internal sealed partial class ServerPage
                 .Append(Para("Google Messages is unpaired here only; remove the pairing on your phone too."))
                 .Append("<form method=\"post\" action=\"/reset\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">")
                 .Append("<label for=\"word\">Type RESET to confirm</label><input id=\"word\" name=\"word\" autocomplete=\"off\" required>")
-                .Append("<label for=\"password\">The server's password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
+                .Append("<label for=\"password\">Server password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
                 .Append("<button type=\"submit\" class=\"danger\">Reset the server</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
             return body.Append("</section>").ToString();
         }

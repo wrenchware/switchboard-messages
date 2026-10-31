@@ -26,7 +26,7 @@ internal sealed partial class ServerPage
     {
         "tailnet_signed_out" => "The server signed out of Tailscale and forgot its machine there. Sign it in below with the account you want. The old machine stays in Tailscale's list until you remove it.",
         "tailnet_no_door" => "Tailscale isn't running on the server just now, so nothing was signed out. Try again in a minute.",
-        "tailnet_oauth_saved" => "The OAuth client is kept on the server. Choose Fix it for me to use it.",
+        "tailnet_oauth_saved" => "OAuth client saved. Choose Fix it for me to use it.",
         "tailnet_oauth_removed" => "The OAuth client was removed from the server. Delete it in Tailscale too if you no longer need it.",
         "tailnet_turn_failed" => "Tailscale couldn't be turned on or off just now, so nothing changed. Try again in a minute.",
         _ => null,
@@ -104,20 +104,20 @@ internal sealed partial class ServerPage
         body.Append("</dl><ul class=\"rows\">");
 
         if (view.Tagged)
-            Step(body, false, "Tagged", "Tagged in Tailscale, so the server can't tell your devices from anyone else's: your access rules decide alone who reaches it.");
+            Step(body, false, "Tagged", "The server has a tag in Tailscale, so it can't tell which devices are yours. Your Tailscale access rules alone decide who can reach it.");
         else
-            Step(body, true, "Signed in", view.Owner is { Length: > 0 } owner ? $"As {owner}. The server lets in only this account's devices." : "The server lets in only your own devices.");
+            Step(body, true, "Signed in", view.Owner is { Length: > 0 } owner ? $"As {owner}. Only this account's devices can reach the server." : "Only your own devices can reach the server.");
 
-        if (view.ExpiryOff) Step(body, true, "Server stays signed in", "Its key expiry is off.");
+        if (view.ExpiryOff) Step(body, true, "Server stays signed in", "Key expiry is off, so Tailscale won't sign it out.");
         else if (view.Expiry is { } expiry)
-            Step(body, false, "Keep the server signed in", $"Tailscale signs the server out{Until(expiry)} unless its key expiry is off. Open it in Tailscale, then choose Disable key expiry from its ⋯ menu.",
+            Step(body, false, "Keep the server signed in", $"Tailscale will sign the server out{Until(expiry)}. To stop that, open it in Tailscale and choose Disable key expiry from its ⋯ menu.",
                 Link(MachinePage(view.Address), "Open in Tailscale"));
 
         foreach (var phone in view.Phones ?? [])
         {
-            if (phone.ExpiryOff) Step(body, true, $"{phone.Name} stays signed in", "Its key expiry is off.");
+            if (phone.ExpiryOff) Step(body, true, $"{phone.Name} stays signed in", "Key expiry is off, so Tailscale won't sign it out.");
             else
-                Step(body, false, $"Keep {phone.Name} signed in", $"Tailscale signs this phone out{Until(phone.Expiry)} unless its key expiry is off. Open it in Tailscale, then choose Disable key expiry from its ⋯ menu.",
+                Step(body, false, $"Keep {phone.Name} signed in", $"Tailscale will sign this phone out{Until(phone.Expiry)}. To stop that, open it in Tailscale and choose Disable key expiry from its ⋯ menu.",
                     Link(MachinePage(phone.Address), "Open in Tailscale"));
         }
 
@@ -127,19 +127,19 @@ internal sealed partial class ServerPage
         {
             case "yours": Step(body, true, "Only your devices reach it", "Your access rules allow only your devices, and the server checks each one too."); break;
             case "open" when view.OnlyYours:
-                Step(body, true, "Only your devices reach it", "Your Tailscale network holds only your own devices, so its rule that lets every device reach every other reaches only yours. "
-                    + "If you share your network with someone later, add the rule below and take that one out.", shown);
+                Step(body, true, "Only your devices reach it", "Only your own devices are on your Tailscale network, so they're the only ones that can reach the server. "
+                    + "If you ever share your network with someone, swap Tailscale's allow-everyone rule for the one below.", shown);
                 break;
             case "open":
                 // The server's own check is the fence that matters; the rule is a second one.
                 var who = view.Everyone ? "every device on your Tailscale network" : view.Others == 1 ? "1 device that isn't yours" : $"{view.Others} devices that aren't yours";
-                Step(body, false, "Only your devices reach it", $"The server turns away anything that isn't one of your devices, but your access rules let {who} reach it as well. Add this rule to your access controls and take out the one that lets everyone in.",
+                Step(body, false, "Keep other devices out", $"The server already turns away devices that aren't yours, but your Tailscale access rules still let {who} reach it. For a second lock, swap the allow-everyone rule for the one below.",
                     shown);
                 break;
             case "none":
                 Step(body, false, "Let your devices reach it", "Your access rules let no device reach the server, your phone included. Add this rule to your access controls.", shown);
                 break;
-            default: Step(body, true, "Only your devices reach it", "The server checks each one."); break;
+            default: Step(body, true, "Only your devices reach it", "The server checks every device that connects and lets in only yours."); break;
         }
 
         switch (view.Lock)
@@ -154,7 +154,7 @@ internal sealed partial class ServerPage
         }
         body.Append("</ul>");
         if (!view.AllDone) FixPart(body, token, view);
-        body.Append("<p class=\"quiet\">A phone joins with the code from Add a phone, which names this server. ")
+        body.Append("<p class=\"quiet\">To add a phone, use Add a phone under Devices. ")
             .Append("<a href=\"/tailnet/signout\">Use another Tailscale account…</a></p></section>");
     }
 
@@ -185,7 +185,7 @@ internal sealed partial class ServerPage
         body.Append("<div class=\"fix\"><h3>Fix it for me</h3>");
         if (!tailscale.Has)
         {
-            body.Append(Para("The server can do these steps itself with a Tailscale OAuth client: turn off key expiry for itself and your Messages phones, approve them if your network asks for that, and add the access rule. It never signs for Tailnet Lock."))
+            body.Append(Para("Give the server a Tailscale OAuth client and it does the steps above for you: it keeps itself and your phones signed in, approves them if your network asks, and adds the access rule. Signing for Tailnet Lock stays with you."))
                 .Append("<form method=\"get\" action=\"/tailnet/oauth\"><button type=\"submit\" class=\"quiet\">Add an OAuth client…</button></form>");
         }
         else
@@ -243,8 +243,8 @@ internal sealed partial class ServerPage
                         .Append("<form method=\"post\" action=\"/tailnet/oauth\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\">")
                         .Append("<label for=\"client\">Client ID</label><input id=\"client\" name=\"client\" type=\"text\" autocomplete=\"off\" spellcheck=\"false\" required>")
                         .Append("<label for=\"secret\">Client secret</label><input id=\"secret\" name=\"secret\" type=\"password\" autocomplete=\"off\" required>")
-                        .Append("<label for=\"password\">The server's password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
-                        .Append("<button type=\"submit\">Keep it</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
+                        .Append("<label for=\"password\">Server password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
+                        .Append("<button type=\"submit\">Save</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
                     return page.Append("</section>").ToString();
                 }
                 const string title = "Tailscale OAuth client";
@@ -262,7 +262,7 @@ internal sealed partial class ServerPage
                 }
                 if (!await tailscale.SaveAsync(client, secret).ConfigureAwait(false))
                 {
-                    await PageAsync(context, StatusCodes.Status500InternalServerError, title, Ask("The server couldn't keep it. Try again.")).ConfigureAwait(false);
+                    await PageAsync(context, StatusCodes.Status500InternalServerError, title, Ask("The server couldn't save it. Try again.")).ConfigureAwait(false);
                     return;
                 }
                 Redirect(context.Response, "/?done=tailnet_oauth_saved#tailnet");

@@ -40,7 +40,7 @@ internal sealed partial class ServerPage
         var list = devices.List(null);
         var status = card.Health.Status(true, card.Registry, list);
         body.Append("<p class=\"summary\">").Append(Html(status.Summary(time.GetUtcNow()))).Append("</p><ul class=\"rows\">");
-        Step(body, true, "On", $"Through your Firebase project {setup.Offer.ProjectId}.");
+        Step(body, true, "Firebase project", setup.Offer.ProjectId ?? "");
         foreach (var phone in status.Phones ?? [])
             switch (phone.State)
             {
@@ -221,7 +221,7 @@ internal sealed partial class ServerPage
             .Append("<label class=\"drop\" id=\"drop\" for=\"files\"><strong>Drop google-services.json and the private key here</strong><span class=\"quiet\">or click to choose them</span>")
             .Append("<input id=\"files\" name=\"files\" type=\"file\" accept=\".json,application/json\" multiple></label>")
             .Append("<ul id=\"found\" class=\"found\" aria-live=\"polite\"></ul>")
-            .Append("<label for=\"password\">The server's password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
+            .Append("<label for=\"password\">Server password</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>")
             .Append("<button type=\"submit\">").Append(replacing ? "Replace the files" : "Turn on notifications").Append("</button><a class=\"cancel\" href=\"/\">Cancel</a></form>");
         body.Append("<details><summary>Google says key creation is blocked</summary>")
             .Append(Para("Your Google account belongs to an organisation (Google Workspace, at work or school) whose policy forbids private key files. Make the Firebase project with a personal Google account instead, such as a gmail.com address, and start again from the first step."))

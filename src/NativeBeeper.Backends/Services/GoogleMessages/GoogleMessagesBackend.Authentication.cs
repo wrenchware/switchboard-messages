@@ -102,11 +102,11 @@ internal sealed partial class GoogleMessagesBackend
                 {
                     "wrong_account" => "Sign in with the same Google account already paired with this app.",
                     "pair_start_failed" or "pair_finish_failed" => "Your phone did not finish connecting. Open Google Messages, go to Device pairing, and try again.",
-                    "authentication_required" => "Google did not accept this sign-in. Please try signing in again.",
+                    "authentication_required" => "Google did not accept this sign-in. Try signing in again.",
                     "pairing_lost" => "Google no longer has this computer paired with your phone. Choose Pair as a new device.",
                     "phone_unavailable" => "Your phone didn't answer, so the sign-in couldn't be checked. Open Google Messages on your phone and try again. Only if this computer is gone from Device pairing there, choose Pair as a new device.",
                     var code when GooglePairingFailure.Message(code) is { } reason => reason,
-                    _ => "Could not finish Google sign-in. Check your phone connection and try again."
+                    _ => "Couldn't finish Google sign-in. Check your phone connection and try again."
                 });
             }
             catch (Exception failure) { GoogleMessagesLog.Write($"sign_in failed reason={GoogleMessagesLog.Reason(failure)}"); throw; }

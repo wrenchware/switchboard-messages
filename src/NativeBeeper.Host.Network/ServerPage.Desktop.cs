@@ -74,7 +74,7 @@ internal sealed partial class ServerPage
 
     private const string DesktopItem = "messages-desktop";
     private static readonly System.Text.RegularExpressions.Regex PasswordAgain = new(
-        "<label for=\"password\">(?:The server's password|Password)</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required(?: autofocus)?>",
+        "<label for=\"password\">(?:Server password|Password)</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required(?: autofocus)?>",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     // The forms a signed-in browser on this PC is shown carry no password field: the step takes it as given (TrustedHere), and the page says nothing it would need.

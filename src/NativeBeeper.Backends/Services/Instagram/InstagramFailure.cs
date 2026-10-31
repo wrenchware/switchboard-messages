@@ -78,7 +78,7 @@ internal static class InstagramConnectionFailure
         // Messages already reloads once from the saved sign-in when Instagram asks for this, so reaching here means
         // that reload did not finish either; another launch gets its own.
         "resnapshot_required" => "Instagram asked to load this account again from the start, and that did not finish. Restart Messages to try again.",
-        _ => "Instagram could not connect. Try Reconnect again later.",
+        _ => "Instagram couldn't connect. Try Reconnect again later.",
     };
 
     /// <summary>
@@ -176,7 +176,7 @@ internal static class InstagramRefusal
         "read_only" => "Instagram can't send right now.",
         "login_required" or "unsupported" or "unknown_method" => "Instagram is not ready to send yet. Nothing was sent; try again in a moment.",
         "send_uncertain" => "Instagram did not confirm the message. Check the conversation before sending it again.",
-        _ => "The message could not be sent to Instagram. Check the conversation before sending it again.",
+        _ => "The message couldn't be sent to Instagram. Check the conversation before sending it again.",
     };
 
     private static string ChangeSentence(Exception failure, MessageChange kind) => CodeOf(failure) switch
@@ -202,14 +202,14 @@ internal static class InstagramRefusal
         "chat_unknown" => "That Instagram conversation is not loaded. Open it again and retry.",
         "invalid_params" or "read_only" or "login_required" or "unsupported" or "unknown_method" => "The file was not sent to Instagram. Try again in a moment.",
         "send_uncertain" => "Instagram did not confirm the file. Check the conversation before sending it again.",
-        _ => "The file could not be sent to Instagram. Check the conversation before sending it again.",
+        _ => "The file couldn't be sent to Instagram. Check the conversation before sending it again.",
     };
 
     private static string FirstMessageSentence(Exception failure) => CodeOf(failure) switch
     {
         "chat_not_writable" => "That Instagram conversation is a message request or filed as spam, so a message cannot be sent into it from here.",
         "chat_is_self" => "That is this Instagram account.",
-        "chat_unknown" or "invalid_response" => "Instagram could not say which conversation this is. Nothing was sent.",
+        "chat_unknown" or "invalid_response" => "Instagram couldn't say which conversation this is. Nothing was sent.",
         "send_uncertain" => "Instagram did not say whether the message was sent. Check Instagram before sending it again.",
         "read_only" => "This Instagram connection cannot send messages.",
         "login_required" or "session_expired" => "Instagram needs you to sign in again. Reconnect Instagram in Settings.",
@@ -230,7 +230,7 @@ internal static class InstagramRefusal
         "checkpoint_required" or "challenge_required" or "consent_required" => "Instagram wants something confirmed in its own app before this account can be used.",
         "account_suspended" => "Instagram has suspended this account.",
         "request_timeout" => "Instagram did not answer in time. Try again.",
-        _ => "That Instagram conversation could not be opened. Try again.",
+        _ => "That Instagram conversation couldn't be opened. Try again.",
     };
 
     private static string GroupSentence(Exception failure) => CodeOf(failure) switch

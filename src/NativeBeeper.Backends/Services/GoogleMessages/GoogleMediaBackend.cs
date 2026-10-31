@@ -163,14 +163,14 @@ internal sealed partial class GoogleMediaBackend(GoogleMessagesBackend backend, 
             submitted=true; outcome="outcome unknown";
             var result=await backend.MediaCallAsync("ui.sendMedia",new {chatId=GoogleModels.Native(chatId),name=Path.GetFileName(file.Name),mime=file.MimeType,text=caption ?? ""},cancellationToken);
             outcome=result.GetProperty("outcome").GetString() ?? outcome;
-            if(outcome=="rejected") throw new SendException(false,backend.NotDefaultSmsRefusal(result) ?? "Google Messages could not send this attachment. Carrier size or format limits may apply.");
+            if(outcome=="rejected") throw new SendException(false,backend.NotDefaultSmsRefusal(result) ?? "Google Messages couldn't send this attachment. Carrier size or format limits may apply.");
             if(outcome=="unknown") throw new SendException(true,"Attachment outcome is unknown. Check the conversation before sending again.");
             var txn=result.GetProperty("pendingId").GetString();
             if(string.IsNullOrWhiteSpace(txn)) throw new IOException("Missing attachment transaction.");
             return new(chatId,GoogleModels.PendingPrefix+txn);
         }
         catch(SendException) {throw;}
-        catch(Exception) {throw new SendException(submitted,submitted?"Attachment outcome is unknown. Check the conversation before sending again.":"Could not prepare this file. It was not sent.");}
+        catch(Exception) {throw new SendException(submitted,submitted?"Attachment outcome is unknown. Check the conversation before sending again.":"Couldn't prepare this file. It was not sent.");}
         finally {transfers.Release(); RecordUpload(file.MimeType,file.Length,staged,System.Diagnostics.Stopwatch.GetElapsedTime(began),outcome);}
     }
 }

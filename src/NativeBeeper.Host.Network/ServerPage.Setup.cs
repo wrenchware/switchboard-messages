@@ -339,7 +339,7 @@ internal sealed partial class ServerPage
                 body.Append("</section>");
                 break;
             case "pc":
-                body.Append("<section>").Append(Para("Messages on a Windows PC joins with one line copied from here and pasted into Settings, Messages Server. The line holds a one-time pairing code, so the server's password is asked for first."))
+                body.Append("<section>").Append(Para("Messages on a Windows PC joins with one line copied from here and pasted into Settings → Accounts → Messages Server. The line holds a one-time pairing code, so the server's password is asked for first."))
                     .Append(PasswordForm("/pair", token, "Show the line")).Append("</section>");
                 done = devices.Count - PhonesPaired() > 0;
                 break;
@@ -349,7 +349,7 @@ internal sealed partial class ServerPage
                     await BackupsCardAsync(body, token, cancellationToken).ConfigureAwait(false);
                     done = BackupsReady();
                 }
-                else body.Append("<section>").Append(Para("The server has no folder for backups yet. " + MapBackups)).Append("</section>");
+                else body.Append("<section>").Append(Para("Backups need a folder. " + MapBackups)).Append("</section>");
                 break;
         }
         // Forms elsewhere on the screen end at "Cancel"; the walkthrough's own way on is below them.
@@ -372,7 +372,7 @@ internal sealed partial class ServerPage
         if (accounts is { Count: > 0 })
         {
             body.Append("<ul class=\"rows\">");
-            foreach (var account in accounts) Step(body, true, Provider(account.Provider), State(account.State), word: "Connected");
+            foreach (var account in accounts) Step(body, Tone(account.State) == "ok", Provider(account.Provider), State(account.State), word: Word(account.State));
             body.Append("</ul>");
         }
         ConnectList(body, accounts, walkthrough: true, context, token);
@@ -395,7 +395,7 @@ internal sealed partial class ServerPage
 
     private bool BackupsMapped => backups?.Service.Status() is { HasFolder: true };
 
-    private const string MapBackups = "Map a folder on your server to /backups (on Unraid, a share such as /mnt/user/backups/messages), or set MESSAGES_BACKUPS to a folder the server can write to, then start the server again.";
+    private const string MapBackups = "On Unraid, fill in Backups in the container's settings (for example /mnt/user/backups/messages). With Docker, map a folder to /backups. On Linux, set MESSAGES_BACKUPS. Then restart the server.";
 
     // What is left of setting up, on the front page, each line reopening its screen; nothing once everything is done or the owner hid it.
     private async Task ChecklistAsync(StringBuilder body, string token, CancellationToken cancellationToken)
@@ -417,7 +417,7 @@ internal sealed partial class ServerPage
         items.Add(("pc", "Add a PC", devices.Count - phones > 0, null));
         items.Add(BackupsMapped
             ? ("backups", "Back up the server", BackupsReady(), null)
-            : ("backups", "Back up the server", false, "It has no folder for backups yet. " + MapBackups));
+            : ("backups", "Back up the server", false, "Backups need a folder. " + MapBackups));
         if (items.All(item => item.Done)) return;
         body.Append("<section class=\"checklist\"><h2>Finish setting up</h2><ul class=\"rows\">");
         foreach (var (step, title, done, detail) in items)
@@ -457,7 +457,7 @@ internal sealed partial class ServerPage
         var address = remote is not null && TailnetRelay.IsTailnet(remote.IsIPv4MappedToIPv6 ? remote.MapToIPv4() : remote) ? null : Address(context.Request);
         var link = JoinLink.Build(view?.Name ?? tailnet?.Latest?.Name, address, fingerprint(), code, view?.Owner);
         var body = new StringBuilder("<section><div class=\"qr-card\"><div class=\"qr\">").Append(QrCode.Encode(link).ToSvg(label: "The join code for Messages on a phone")).Append("</div><div class=\"grow\">")
-            .Append(Para("Open Messages on your phone and scan this code: on its first screen, or in Settings, Messages Server."))
+            .Append(Para("Open Messages on your phone, choose I have a server, then Scan your server's code."))
             .Append("<p class=\"quiet\">It works once, for the next ").Append((int)PairingCodes.Lifetime.TotalMinutes).Append(" minutes. The phone pins this server's fingerprint and joins with it: there's nothing to type or match.</p>")
             .Append("<p><a href=\"").Append(Html(link)).Append("\">On this phone? Open the link instead.</a></p>")
             .Append("<form method=\"post\" action=\"/phone\"><input type=\"hidden\" name=\"form\" value=\"").Append(Html(token)).Append("\"><input type=\"hidden\" name=\"grant\" value=\"")

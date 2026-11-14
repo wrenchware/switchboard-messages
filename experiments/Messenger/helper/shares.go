@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -146,8 +147,24 @@ func (s *store) applyShares(tbl *table.LSTable, note func(int64, string)) {
 				note(key.thread, key.message)
 			}
 		}
+		template, templated := rows.template()
+		if templated {
+			template.logShape(key.message)
+		}
+		// A laid-out card's words are its message's when it has no picture (the question); with one, they are the
+		// picture card's title and lines (the listing). Its choices are the message's either way.
+		if templated && current != nil && !current.encrypted && current.sender != metaAIMessengerID && current.sender != s.self {
+			text := ""
+			if template.picture == "" {
+				text = strings.Join(template.lines, "\n")
+			}
+			if current.cardText != text || !slices.Equal(current.choices, template.choices) {
+				current.cardText, current.choices = text, template.choices
+				note(key.thread, key.message)
+			}
+		}
 		drawn := map[string]bool{}
-		for _, candidate := range rows.thumbnails(key) {
+		for _, candidate := range rows.thumbnails(key, template) {
 			if candidate.source == "" || !strings.HasPrefix(candidate.mime, "image/") {
 				continue
 			}
@@ -246,7 +263,7 @@ func orderedShareKeys[T any](rows map[shareRowKey]T) []shareRowKey {
 	return keys
 }
 
-func (rows *shareRows) thumbnails(message shareMessageKey) []shareThumbnail {
+func (rows *shareRows) thumbnails(message shareMessageKey, template cardTemplate) []shareThumbnail {
 	var result []shareThumbnail
 	for _, key := range orderedShareKeys(rows.items) {
 		row := rows.items[key]
@@ -268,6 +285,18 @@ func (rows *shareRows) thumbnails(message shareMessageKey) []shareThumbnail {
 	for _, key := range orderedShareKeys(rows.containers) {
 		row := rows.containers[key]
 		source := firstOf(row.PreviewUrlLarge, row.PreviewUrl, row.PreviewUrlFallback, row.ImageUrl, row.ImageUrlFallback)
+		if source == "" && template.picture != "" && row.XmaDataclass != "" {
+			id := firstOf(row.AttachmentFbid, row.MessageId+":xma:"+strconv.FormatInt(row.AttachmentIndex, 10))
+			title, lines := "Shared link", []string(nil)
+			if len(template.lines) > 0 {
+				title, lines = template.lines[0], template.lines[1:]
+			}
+			result = append(result, shareThumbnail{attachment: &attachment{
+				id: id, name: title, description: strings.Join(lines, "\n"), mime: "image/jpeg", source: template.picture,
+				link: template.link,
+			}, legacyID: id})
+			continue
+		}
 		if source == "" {
 			continue
 		}
@@ -477,4 +506,16 @@ func valueKind(value any) string {
 	default:
 		return "other"
 	}
+}
+
+// The first of a message's cards that Facebook lays out itself (template.go). Others are ordinary cards.
+func (rows *shareRows) template() (cardTemplate, bool) {
+	for _, key := range orderedShareKeys(rows.containers) {
+		if dataclass := rows.containers[key].XmaDataclass; dataclass != "" {
+			if card, ok := parseCardTemplate(dataclass); ok {
+				return card, true
+			}
+		}
+	}
+	return cardTemplate{}, false
 }

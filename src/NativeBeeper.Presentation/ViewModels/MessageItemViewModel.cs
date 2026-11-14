@@ -62,6 +62,8 @@ public sealed class MessageItemViewModel : CommunityToolkit.Mvvm.ComponentModel.
     // A button on a service's own line (Messenger's "View buyer profile"); only an https address is ever opened.
     public Uri? SystemActionUri => IsSystem && Message.Action is { } action && Uri.TryCreate(action.Url, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri : null;
     public string SystemActionTitle => SystemActionUri is null ? "" : Message.Action!.Title;
+    // A card's answers (Messenger's Marketplace Assistant: "Yes, sold on Facebook" and two more), on one quiet line.
+    public string ChoicesLine => Message.IsDeleted || Message.Choices is not { Count: > 0 } choices ? "" : string.Join(" · ", choices);
     public bool HasSystemAction => SystemActionUri is not null;
     public bool ShowSender { get; private set; }
     public bool ContinuesGroup { get; private set; }

@@ -92,7 +92,11 @@ public sealed record ChatMessage(string Id, string ChatId, string SenderId, stri
     // A button a service's own line carries, as its app draws one: Messenger's "View buyer profile" after a Marketplace buyer's
     // first line. Only on a system line, and written only when there is one, so every other saved row reads as before. Appended.
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
-    NoticeAction? Action = null);
+    NoticeAction? Action = null,
+    // The answers a service's card offers, in its words, drawn quietly under the message: Messenger's Marketplace Assistant asks
+    // "Have you sold this item?" with three. Words only; nothing presses them. Written only when there are some. Appended.
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? Choices = null);
 /// <summary>A button on a service's own line: its words, and the https address it opens in the browser.</summary>
 public sealed record NoticeAction(string Title, string Url);
 public sealed record MessageAttachment(string? Name, string Type, string? MimeType, long? Size,

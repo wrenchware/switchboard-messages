@@ -1503,7 +1503,8 @@ func (a *adapter) showImported(plan *importPlan, shown *importChanges) bool {
 			if m.AIUpdatedAt > 0 || m.EditedAt > 0 || m.CardText != "" || m.Notice {
 				a.chats.mu.Lock()
 				if current := a.chats.messages[plan.key][m.ID]; current != nil {
-					current.aiUpdatedAt, current.editedAt, current.cardText = m.AIUpdatedAt, m.EditedAt, m.CardText
+					current.aiUpdatedAt, current.editedAt = m.AIUpdatedAt, m.EditedAt
+					current.cardText, current.choices = unpackCard(m.CardText)
 					current.notice = m.Notice
 				}
 				a.chats.mu.Unlock()

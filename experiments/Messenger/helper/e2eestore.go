@@ -687,7 +687,7 @@ func (m *messageStore) restore(ctx context.Context, into *store) int {
 			if current := into.messages[thread][id]; current != nil {
 				current.aiUpdatedAt = aiUpdatedAt
 				current.editedAt = editedAt
-				current.cardText = cardText
+				current.cardText, current.choices = unpackCard(cardText)
 				current.notice = notice
 			}
 			into.mu.Unlock()
@@ -848,6 +848,7 @@ func (a *adapter) keepMessages(ctx context.Context, touched *changes) (cost keep
 					logf("e2ee message could not be kept")
 				} else {
 					kept.rememberNoticeOn(ctx, tx, key, id, a.chats)
+					kept.rememberCardOn(ctx, tx, key, id, a.chats)
 				}
 			}
 			// The pictures too, not only the words. A message whose attachment is not kept comes back as a row with

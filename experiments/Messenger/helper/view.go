@@ -43,15 +43,15 @@ type viewMessage struct {
 	At       time.Time `json:"at"`
 	Outgoing bool      `json:"outgoing"`
 	Deleted  bool      `json:"deleted"`
-	ReplyTo  string      `json:"replyTo,omitempty"`
+	ReplyTo  string    `json:"replyTo,omitempty"`
 	// Facebook's own line across the conversation rather than a person's message (store.go's notice).
 	Notice bool `json:"notice,omitempty"`
 	// A row Facebook's own phone app does not show, so neither does this one (store.go's receipt).
 	Hidden bool `json:"hidden,omitempty"`
 	// The buyer's Marketplace profile, on a Marketplace chat's "started this chat." line (store.go's buyerProfileLocked).
-	Profile string `json:"profile,omitempty"`
-	Status   int64       `json:"status"`
-	Media    []viewMedia `json:"media"`
+	Profile string      `json:"profile,omitempty"`
+	Status  int64       `json:"status"`
+	Media   []viewMedia `json:"media"`
 	// One per person who reacted, with the emoji they chose.
 	Reactions []viewReaction `json:"reactions,omitempty"`
 	// Everyone who has read this far, by contact id. The conversation draws a face for each on the newest message
@@ -67,6 +67,8 @@ type viewMessage struct {
 	// For a message this account sent: when it was read, in milliseconds, where Facebook said when and this helper saw
 	// that reading happen. Zero when that is not known, which is never a guess at it.
 	SeenAt int64 `json:"seenAt,omitempty"`
+	// A laid-out card's answers in Facebook's words (store.go's choices), shown under the message, not pressed here.
+	Choices []string `json:"choices,omitempty"`
 }
 
 type viewReaction struct {
@@ -75,32 +77,32 @@ type viewReaction struct {
 }
 
 type viewChat struct {
-	ExpectedTransport string            `json:"expectedTransport"`
-	Transport         string            `json:"transport"`
-	OutgoingID        string            `json:"outgoingId"`
-	PreviewOutgoing   bool              `json:"previewOutgoing"`
-	ReadOnly          bool              `json:"readOnly"`
+	ExpectedTransport string `json:"expectedTransport"`
+	Transport         string `json:"transport"`
+	OutgoingID        string `json:"outgoingId"`
+	PreviewOutgoing   bool   `json:"previewOutgoing"`
+	ReadOnly          bool   `json:"readOnly"`
 	// Moved to end-to-end encryption: its messages travel on a channel this build does not speak.
-	Encrypted         bool              `json:"encrypted,omitempty"`
-	ID                string            `json:"id"`
-	Title             string            `json:"title"`
-	Participants      []viewParticipant `json:"participants"`
-	Preview           string            `json:"preview"`
+	Encrypted    bool              `json:"encrypted,omitempty"`
+	ID           string            `json:"id"`
+	Title        string            `json:"title"`
+	Participants []viewParticipant `json:"participants"`
+	Preview      string            `json:"preview"`
 	// Who wrote the preview's words in a group, as the messages name them; left out for this account and one-to-ones.
-	PreviewSender     string            `json:"previewSender,omitempty"`
-	PreviewName       string            `json:"previewName,omitempty"`
-	At                time.Time         `json:"at"`
-	Unread            bool              `json:"unread"`
+	PreviewSender string    `json:"previewSender,omitempty"`
+	PreviewName   string    `json:"previewName,omitempty"`
+	At            time.Time `json:"at"`
+	Unread        bool      `json:"unread"`
 	// This account's read watermark (Unix ms): the app draws "New messages" above what came after it. Zero when
 	// Messenger has not said, as for Unread.
-	ReadAt            int64             `json:"readAt,omitempty"`
-	Group             bool              `json:"group"`
+	ReadAt int64 `json:"readAt,omitempty"`
+	Group  bool  `json:"group"`
 	// A Marketplace buyer and seller's chat, by Facebook's own thread kind.
-	Marketplace bool `json:"marketplace,omitempty"`
-	Archived          bool              `json:"archived"`
-	Hidden            bool              `json:"hidden"`
-	AvatarColor       string            `json:"avatarColor,omitempty"`
-	AvatarURL         string            `json:"avatarUrl,omitempty"`
+	Marketplace bool   `json:"marketplace,omitempty"`
+	Archived    bool   `json:"archived"`
+	Hidden      bool   `json:"hidden"`
+	AvatarColor string `json:"avatarColor,omitempty"`
+	AvatarURL   string `json:"avatarUrl,omitempty"`
 	// Facebook's count of a group's members, which the participants above can fall short of while their rows arrive.
 	Members int `json:"members,omitempty"`
 	// How this account muted the conversation in Messenger, perhaps on another device: -1 until turned off, otherwise

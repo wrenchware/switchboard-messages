@@ -39,7 +39,9 @@ internal sealed record MessengerMessage(string Id, string ChatId, string Sender,
     // own phone app does not show (Marketplace's "Message sent" card). Appended.
     bool Notice = false, bool Hidden = false,
     // The buyer's Marketplace profile, on a Marketplace chat's "started this chat." line: Messenger's "View buyer profile". Appended.
-    string? Profile = null);
+    string? Profile = null,
+    // A laid-out card's answers in Facebook's words (Marketplace Assistant's "Have you sold this item?"). Appended.
+    string[]? Choices = null);
 internal sealed record MessengerMessagePage(MessengerMessage[] Messages, bool Refreshing);
 internal sealed record MessengerMessageWindow(MessengerMessage[] Messages, bool MoreOlder, bool MoreNewer);
 internal sealed record MessengerReaction(string Key, string Sender);
@@ -193,7 +195,9 @@ internal static class MessengerModels
                 (message.ReadMark ?? []).Select(Person).ToArray()),
             // The helper builds it from the buyer's id (Facebook sends no button); only an https address on a line becomes one.
             Action: message.Notice && message.Profile is { } profile && profile.StartsWith("https://www.facebook.com/", StringComparison.Ordinal)
-                ? new NoticeAction(BuyerProfileTitle, profile) : null);
+                ? new NoticeAction(BuyerProfileTitle, profile) : null,
+            // Words only: pressing one in Messenger sends a reply, which this app does not do for it.
+            Choices: message.Choices is { Length: > 0 } choices ? choices.Where(choice => !string.IsNullOrWhiteSpace(choice)).ToArray() : null);
     }
 
     // Messenger's own words for its button.

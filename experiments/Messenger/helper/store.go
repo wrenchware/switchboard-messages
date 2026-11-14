@@ -74,6 +74,9 @@ type message struct {
 	// Marketplace's "Message sent" card under a buyer's first message (shares.go's marketplaceReceipt), which the
 	// Messenger phone app does not show, and neither does this app (owner, 2026-11-12).
 	receipt bool
+	// What a card Facebook lays out itself offers as answers (template.go), in its words, shown under the message.
+	// Pressing one in Facebook's apps sends a reply; here they are words only.
+	choices []string
 }
 
 // What a batch of rows changed, so the app can refresh just those conversations rather than reloading everything.
@@ -598,10 +601,12 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 		}
 		s.noteSendStatus(row.SendStatusV2, s.self != 0 && row.SenderId == s.self)
 		cardText := ""
+		var choices []string
 		receipt := false
 		replyTo := row.ReplySourceId
 		if previous := thread[row.MessageId]; previous != nil && previous.sender == row.SenderId && !row.IsUnsent {
 			cardText = previous.cardText
+			choices = previous.choices
 			receipt = previous.receipt
 			if row.SenderId == metaAIMessengerID && replyTo == "" {
 				replyTo = previous.replyTo
@@ -617,6 +622,7 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 			unsent:    row.IsUnsent,
 			status:    row.SendStatusV2,
 			cardText:  cardText,
+			choices:   choices,
 			notice:    row.IsAdminMessage,
 			receipt:   receipt,
 		}
@@ -1164,6 +1170,10 @@ func (s *store) viewOf(key int64, current *message) viewMessage {
 			text = metaAIUnavailableReply
 		}
 	}
+	// A laid-out card with no picture (template.go): its words are the message's, which has none of its own.
+	if current.sender != metaAIMessengerID && !current.unsent && strings.TrimSpace(text) == "" {
+		text = current.cardText
+	}
 	return viewMessage{
 		ID:       current.id,
 		ChatID:   strconv.FormatInt(key, 10),
@@ -1186,6 +1196,7 @@ func (s *store) viewOf(key int64, current *message) viewMessage {
 		EditedAt:  current.editedAt,
 		Delivered: s.deliveredTo(key, current),
 		SeenAt:    s.seenAt(key, current),
+		Choices:   current.choices,
 	}
 }
 

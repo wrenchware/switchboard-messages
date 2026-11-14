@@ -93,6 +93,9 @@ type changes struct {
 	// Subset of the changed ids supplied by a history snapshot. Keep them in Messages/Deleted for redraw and
 	// persistence, while allowing the app to learn their current state without announcing it as live activity.
 	History map[string][]string `json:"history,omitempty"`
+	// Of the changed messages, those whose laid-out card was just read into words or choices (store.go's apply). Never sent
+	// as such: login, which otherwise sends nothing, sends these as history (main.go).
+	cards map[string][]string
 }
 
 // Lightspeed upserts supply fetched history, including reactions bundled with those messages (the pinned upstream
@@ -416,9 +419,21 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 		}
 		known[id] = true
 	}
+	// Messages whose laid-out card was read into words or choices (shares.go). Login sends these alone (main.go).
+	carded := map[string][]string{}
+	card := func(key int64, id string) {
+		note(key, id)
+		if key != 0 && id != "" {
+			chat := strconv.FormatInt(key, 10)
+			carded[chat] = append(carded[chat], id)
+		}
+	}
 	defer func() {
 		s.collect(touched, chats, messages, removed, seen)
 		touched.markHistory(tbl)
+		if len(carded) > 0 {
+			touched.cards = carded
+		}
 	}()
 	applyFolderRows(s, tbl, touch)
 	// Facebook describes a conversation with either of two rows and the bridge treats them the same. The insert row
@@ -884,7 +899,7 @@ func (s *store) apply(tbl *table.LSTable) *changes {
 			size: row.Filesize, width: row.PreviewWidth, height: row.PreviewHeight, video: video, animated: animated,
 		})
 	}
-	s.applyShares(tbl, note)
+	s.applyShares(tbl, note, card)
 	// Facebook flags a GIF here rather than on the attachment itself, often after it.
 	for _, row := range tbl.LSUpdateExtraAttachmentColumns {
 		if !row.ShouldAutoplayVideo || row.AttachmentFBID == "" {
@@ -1403,6 +1418,7 @@ func (s *store) view(current *thread) viewChat {
 	// Older saved identities predate previewOutgoing. Recover it from the newest actual message when its timestamp
 	// matches the thread activity closely enough to be the provider's preview; retain markSent's value before an echo.
 	var previewSender int64
+	snippet := current.snippet
 	if !previewOutgoing {
 		var latest *message
 		for _, candidate := range s.messages[current.key] {
@@ -1417,6 +1433,12 @@ func (s *store) view(current *thread) viewChat {
 				// A group's line names who wrote it, as the conversation's own messages name them: the phone's line gained
 				// the name when the conversation was read and lost it when the phone let it go (its diary, 2026-10-28).
 				previewSender = latest.sender
+			}
+			// Facebook's snippet for a laid-out card is the bare word "text" (Marketplace Assistant, 2026-11-14): its words
+			// as read (shares.go's template) say what it is.
+			if latest.sender != s.self && latest.sender != metaAIMessengerID && strings.TrimSpace(latest.text) == "" &&
+				strings.TrimSpace(latest.cardText) != "" {
+				snippet, _, _ = strings.Cut(strings.TrimSpace(latest.cardText), "\n")
 			}
 		}
 	}
@@ -1438,7 +1460,7 @@ func (s *store) view(current *thread) viewChat {
 		ID:              strconv.FormatInt(current.key, 10),
 		Title:           title,
 		Participants:    participants,
-		Preview:         current.snippet,
+		Preview:         snippet,
 		PreviewSender:   previewSenderID,
 		PreviewName:     previewName,
 		PreviewOutgoing: previewOutgoing,

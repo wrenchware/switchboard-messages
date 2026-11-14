@@ -182,3 +182,19 @@ func (m *messageStore) rememberCardOn(ctx context.Context, on execer, thread int
 		logf("card text could not be kept")
 	}
 }
+
+// Only the messages whose card was read, as history: redrawn and kept by the server, never announced (main.go's login).
+func (c *changes) cardChanges() *changes {
+	if c == nil || len(c.cards) == 0 {
+		return nil
+	}
+	return &changes{Messages: c.cards, History: c.cards}
+}
+
+func countIDs(byChat map[string][]string) int {
+	count := 0
+	for _, ids := range byChat {
+		count += len(ids)
+	}
+	return count
+}

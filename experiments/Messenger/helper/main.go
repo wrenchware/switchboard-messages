@@ -339,9 +339,17 @@ func (a *adapter) login(ctx context.Context, r request) (any, string) {
 	}
 	applying := time.Now()
 	a.prepareRecentCatchUp()
-	a.applyTable(ctx, tbl)
+	first := a.applyTable(ctx, tbl)
 	counts := summarize(tbl)
 	logf("login applied first page in %dms", time.Since(applying).Milliseconds())
+	// The first page announces nothing: the app reads the list and its conversations afresh after a login. A message whose
+	// laid-out card this page first read (shares.go's template) is the exception: the server already holds it, empty,
+	// from before (2026-11-14, a Marketplace Assistant question that stayed blank after the helper had read it). Sent as
+	// history, so it is redrawn and kept but never announced as something new.
+	if cards := first.cardChanges(); cards != nil {
+		logf("login cards changed=%d", countIDs(cards.Messages))
+		a.out.write(response{Event: "changed", Result: cards})
+	}
 	a.mu.Lock()
 	a.client = client
 	a.totals = a.totals.add(counts)

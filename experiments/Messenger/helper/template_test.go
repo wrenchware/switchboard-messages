@@ -146,3 +146,36 @@ func TestCardTemplateLogHoldsNoWords(t *testing.T) {
 		t.Fatalf("the template log must say the card's shape:\n%s", log)
 	}
 }
+
+// After a restart the first page is announced to nobody, so a question kept empty before its card could be read stayed
+// blank in the app (2026-11-14). Login sends exactly those messages, as history; reading the same card again sends none.
+// The chat list's preview is the card's words, not Facebook's snippet "text".
+func TestCardTemplateReachesAppAfterLoginAndNamesThePreview(t *testing.T) {
+	s := newStore()
+	s.setSelf(1)
+	s.apply(&table.LSTable{
+		LSDeleteThenInsertThread: []*table.LSDeleteThenInsertThread{{ThreadKey: 7, ThreadType: table.MARKETPLACE, ThreadName: "Synthetic assistant",
+			Snippet: "text", LastActivityTimestampMs: 2000}},
+		LSInsertMessage: []*table.LSInsertMessage{{ThreadKey: 7, MessageId: "synthetic-question", SenderId: 42, TimestampMs: 2000}},
+	})
+	page := &table.LSTable{
+		LSUpsertMessage: []*table.LSUpsertMessage{{ThreadKey: 7, MessageId: "synthetic-question", SenderId: 42, TimestampMs: 2000}},
+		LSInsertXmaAttachment: []*table.LSInsertXmaAttachment{
+			{ThreadKey: 7, MessageId: "synthetic-question", AttachmentFbid: "synthetic-card", XmaDataclass: syntheticTemplate(t, syntheticQuestion)},
+		},
+	}
+	cards := s.apply(page).cardChanges()
+	if cards == nil || !slices.Equal(cards.Messages["7"], []string{"synthetic-question"}) ||
+		!slices.Equal(cards.History["7"], []string{"synthetic-question"}) || len(cards.Chats) != 0 {
+		t.Fatalf("login must send the question alone, as history: %+v", cards)
+	}
+	if again := s.apply(page).cardChanges(); again != nil {
+		t.Fatalf("a card read again unchanged must send nothing: %+v", again)
+	}
+	s.mu.Lock()
+	chat := s.view(s.threads[7])
+	s.mu.Unlock()
+	if chat.Preview != "Synthetic question?" {
+		t.Fatalf("the preview must be the card's words: %q", chat.Preview)
+	}
+}
